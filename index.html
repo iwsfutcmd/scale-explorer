@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#141821" />
+  <title>Scale Explorer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Scale Explorer</h1>
+      <p class="subtitle">Pick a root, a tuning, and a scale — then play it.</p>
+    </header>
+
+    <section class="controls">
+      <div class="field">
+        <label for="root-select">Root note</label>
+        <select id="root-select"></select>
+      </div>
+
+      <div class="field">
+        <label for="scale-select">Scale</label>
+        <select id="scale-select"></select>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Tuning</span>
+        <div id="tuning-group" class="segmented" role="radiogroup" aria-label="Tuning system"></div>
+      </div>
+
+      <div class="field">
+        <label for="volume-slider">Volume</label>
+        <input id="volume-slider" type="range" min="0" max="1" step="0.01" value="0.35" />
+      </div>
+    </section>
+
+    <section class="notes-panel">
+      <div id="notes" class="notes" role="group" aria-label="Scale notes"></div>
+      <button id="play-scale" class="play-scale-btn" type="button">▶ Play scale</button>
+    </section>
+
+    <p class="hint">Tap and hold a button to sustain a note. Multiple fingers work at once.</p>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
