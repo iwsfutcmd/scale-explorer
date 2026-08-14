@@ -8,13 +8,23 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main>
-    <header>
-      <h1>Scale Explorer</h1>
-      <p class="subtitle">Pick a root, a tuning, and a scale — then play it.</p>
+  <div class="app">
+    <header class="topbar">
+      <button id="open-options" class="icon-btn" type="button" aria-label="Options" aria-haspopup="dialog">⚙</button>
+      <h1 class="app-title">Scale Explorer</h1>
+      <button id="play-scale" class="icon-btn" type="button" aria-label="Play scale">▶</button>
     </header>
 
-    <section class="controls">
+    <main id="notes" class="notes" role="group" aria-label="Scale notes"></main>
+  </div>
+
+  <dialog id="options-dialog" aria-label="Options">
+    <form method="dialog" class="sheet">
+      <div class="sheet-header">
+        <h2>Options</h2>
+        <button class="icon-btn" type="submit" aria-label="Close options">✕</button>
+      </div>
+
       <div class="field">
         <label for="root-select">Root note</label>
         <select id="root-select"></select>
@@ -28,21 +38,17 @@
       <div class="field">
         <span class="field-label">Tuning</span>
         <div id="tuning-group" class="segmented" role="radiogroup" aria-label="Tuning system"></div>
+        <p id="tuning-hint" class="tuning-hint" hidden>
+          Locked to Pythagorean (3-limit) — the exact ratios Chinese pentatonic modes use.
+        </p>
       </div>
 
       <div class="field">
         <label for="volume-slider">Volume</label>
         <input id="volume-slider" type="range" min="0" max="1" step="0.01" value="0.35" />
       </div>
-    </section>
-
-    <section class="notes-panel">
-      <div id="notes" class="notes" role="group" aria-label="Scale notes"></div>
-      <button id="play-scale" class="play-scale-btn" type="button">▶ Play scale</button>
-    </section>
-
-    <p class="hint">Tap and hold a button to sustain a note. Multiple fingers work at once.</p>
-  </main>
+    </form>
+  </dialog>
 
   <script src="app.js"></script>
 </body>
