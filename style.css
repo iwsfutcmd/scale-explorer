@@ -93,20 +93,33 @@ body {
   cursor: default;
 }
 
-/* --- Note grid ----------------------------------------------------- */
+/* --- Note row -------------------------------------------------------
+   Guaranteed single row (mobile is assumed landscape): buttons never wrap
+   and never scroll, they just divide the available width evenly and shrink.
+   `min-height: 0` / `min-width: 0` override flexbox's default "don't shrink
+   below content size" behavior, which is what let content force the row to
+   overflow instead of fitting — most visible on Firefox. Each button is its
+   own size container so its inner text can progressively drop the least
+   important lines (freq, then ratio/hanzi, then the octave badge) as it
+   narrows, rather than overflowing or wrapping. */
 
 .notes {
   flex: 1 1 auto;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
-  grid-auto-rows: minmax(56px, 160px);
-  align-content: center;
-  gap: 0.4rem;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 0.3rem;
   padding: 0.5rem calc(0.5rem + env(safe-area-inset-right)) calc(0.5rem + env(safe-area-inset-bottom)) calc(0.5rem + env(safe-area-inset-left));
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .note-btn {
+  container-type: inline-size;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg-panel);
@@ -116,17 +129,11 @@ body {
   align-items: center;
   justify-content: center;
   gap: 0.05rem;
-  padding: 0.25rem;
+  padding: 0.25rem 0.1rem;
   cursor: pointer;
   user-select: none;
   touch-action: none;
   transition: transform 0.05s ease, background 0.08s ease;
-}
-
-.note-btn .ratio {
-  text-align: center;
-  overflow-wrap: anywhere;
-  line-height: 1.1;
 }
 
 .note-btn .oct {
@@ -136,23 +143,50 @@ body {
 }
 
 .note-btn .name {
-  font-size: clamp(0.95rem, 3.2vw, 1.25rem);
+  font-size: clamp(0.85rem, 5cqi, 1.25rem);
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .note-btn .hanzi {
-  font-size: clamp(0.75rem, 2.4vw, 0.95rem);
+  font-size: clamp(0.7rem, 4cqi, 0.95rem);
   color: var(--text-dim);
+  white-space: nowrap;
 }
 
 .note-btn .ratio {
   font-size: 0.7rem;
   color: var(--text-dim);
+  text-align: center;
+  overflow-wrap: anywhere;
+  line-height: 1.1;
 }
 
 .note-btn .freq {
   font-size: 0.62rem;
   color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* Narrow buttons (many notes on screen at once): drop secondary info,
+   note name stays visible the longest. */
+@container (max-width: 68px) {
+  .note-btn .freq {
+    display: none;
+  }
+}
+
+@container (max-width: 50px) {
+  .note-btn .ratio,
+  .note-btn .hanzi {
+    display: none;
+  }
+}
+
+@container (max-width: 32px) {
+  .note-btn .oct {
+    display: none;
+  }
 }
 
 .note-btn.root {

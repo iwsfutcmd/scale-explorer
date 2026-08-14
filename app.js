@@ -104,12 +104,22 @@ function rootFrequency(rootIndex) {
   return REF_A4 * 2 ** ((rootIndex - A_INDEX) / 12);
 }
 
-// Root octave, one octave down, one octave up, plus the closing note two
-// octaves above the root — three octaves of the scale, start to finish.
-function buildDegreeSequence(baseDegrees) {
-  const octaveOffsets = [-12, 0, 12];
-  const sequence = octaveOffsets.flatMap((offset) => baseDegrees.map((d) => d + offset));
-  sequence.push(24);
+// For N octaves, spread as evenly as possible below/above the root (extra
+// octave goes on top for even N), e.g. 3 -> [-12, 0, 12], 4 -> [-12, 0, 12, 24].
+function octaveOffsets(count) {
+  const below = Math.floor((count - 1) / 2);
+  const above = Math.ceil((count - 1) / 2);
+  const offsets = [];
+  for (let i = -below; i <= above; i++) offsets.push(i * 12);
+  return offsets;
+}
+
+// The requested number of octaves, plus one closing note an octave above the
+// topmost one, so every run resolves back onto the root.
+function buildDegreeSequence(baseDegrees, octaveCount) {
+  const offsets = octaveOffsets(octaveCount);
+  const sequence = offsets.flatMap((offset) => baseDegrees.map((d) => d + offset));
+  sequence.push(offsets[offsets.length - 1] + 12);
   return sequence;
 }
 
@@ -117,11 +127,6 @@ function degreeFrequency(rootFreq, tuningKey, degree) {
   const semitone = ((degree % 12) + 12) % 12;
   const octave = Math.floor(degree / 12);
   return rootFreq * TUNINGS[tuningKey].ratios[semitone] * 2 ** octave;
-}
-
-function scaleFrequencies(rootIndex, tuningKey, baseDegrees) {
-  const root = rootFrequency(rootIndex);
-  return buildDegreeSequence(baseDegrees).map((d) => degreeFrequency(root, tuningKey, d));
 }
 
 // Exact ratio label relative to the root: a reduced fraction for just/Pythagorean
@@ -141,30 +146,59 @@ function ratioLabel(tuningKey, degree) {
 }
 
 // --- Audio engine --------------------------------------------------------
+//
+// A fixed pool of oscillators is created once, up front, and left running
+// permanently (silent, gain 0) — the same approach audio_fun used. Taps only
+// retune an existing oscillator's frequency and ramp its gain, instead of
+// constructing a brand-new oscillator/gain node graph on every touch. Building
+// that graph fresh per tap (createOscillator + createGain + connect + start)
+// was the main source of per-tap latency, especially pronounced on Firefox.
+
+const VOICE_POOL_SIZE = 16;
 
 let audioCtx = null;
+let voicePool = [];
+
 function getAudioContext() {
   if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "interactive" });
+    voicePool = Array.from({ length: VOICE_POOL_SIZE }, () => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "sine";
+      gain.gain.value = 0;
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start();
+      return { osc, gain, busy: false, lastUsed: 0 };
+    });
   }
   if (audioCtx.state === "suspended") audioCtx.resume();
   return audioCtx;
+}
+
+function acquireVoice() {
+  let voice = voicePool.find((v) => !v.busy);
+  if (!voice) {
+    // All voices busy (heavy multi-touch / overlapping scale playback) —
+    // steal whichever voice has been playing longest.
+    voice = voicePool.reduce((oldest, v) => (v.lastUsed < oldest.lastUsed ? v : oldest));
+  }
+  voice.busy = true;
+  voice.lastUsed = performance.now();
+  return voice;
 }
 
 let masterVolume = 0.35;
 
 function startNote(freq) {
   const ctx = getAudioContext();
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = "sine";
-  osc.frequency.value = freq;
-  gain.gain.value = 0;
-  osc.connect(gain).connect(ctx.destination);
+  const voice = acquireVoice();
   const now = ctx.currentTime;
-  gain.gain.linearRampToValueAtTime(masterVolume, now + 0.008);
-  osc.start(now);
-  return { osc, gain };
+  voice.osc.frequency.setValueAtTime(freq, now);
+  voice.gain.gain.cancelScheduledValues(now);
+  voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
+  voice.gain.gain.linearRampToValueAtTime(masterVolume, now + 0.008);
+  return voice;
 }
 
 function stopNote(voice) {
@@ -174,7 +208,7 @@ function stopNote(voice) {
   voice.gain.gain.cancelScheduledValues(now);
   voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
   voice.gain.gain.linearRampToValueAtTime(0, now + 0.05);
-  voice.osc.stop(now + 0.06);
+  voice.busy = false;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -194,6 +228,7 @@ async function playScaleSequence(freqs) {
 
 const rootSelect = document.getElementById("root-select");
 const scaleSelect = document.getElementById("scale-select");
+const octaveSelect = document.getElementById("octave-select");
 const tuningGroup = document.getElementById("tuning-group");
 const tuningHint = document.getElementById("tuning-hint");
 const volumeSlider = document.getElementById("volume-slider");
@@ -202,14 +237,27 @@ const playScaleBtn = document.getElementById("play-scale");
 const openOptionsBtn = document.getElementById("open-options");
 const optionsDialog = document.getElementById("options-dialog");
 
+const OCTAVE_CHOICES = [1, 2, 3, 4, 5];
+
 let state = {
   root: 0, // index into NOTE_NAMES
   tuning: "equal",
   scaleName: "Major (Ionian)",
+  octaves: 3,
 };
 
 let currentFrequencies = [];
 const activeVoices = new Map(); // pointerId -> voice
+
+function populateOctaveSelect() {
+  OCTAVE_CHOICES.forEach((n) => {
+    const opt = document.createElement("option");
+    opt.value = n;
+    opt.textContent = `${n} octave${n === 1 ? "" : "s"}`;
+    octaveSelect.appendChild(opt);
+  });
+  octaveSelect.value = state.octaves;
+}
 
 function populateRootSelect() {
   NOTE_NAMES.forEach((name, i) => {
@@ -276,7 +324,7 @@ function renderNotes() {
   const { degrees, fixedTuning, groupName } = findScaleEntry(state.scaleName);
   const effectiveTuning = fixedTuning || state.tuning;
   const showChinese = groupName === "Chinese Pentatonic Modes";
-  const degreeSeq = buildDegreeSequence(degrees);
+  const degreeSeq = buildDegreeSequence(degrees, state.octaves);
   const root = rootFrequency(state.root);
   currentFrequencies = degreeSeq.map((d) => degreeFrequency(root, effectiveTuning, d));
   updateTuningUI(fixedTuning);
@@ -365,6 +413,11 @@ scaleSelect.addEventListener("change", () => {
   render();
 });
 
+octaveSelect.addEventListener("change", () => {
+  state.octaves = Number(octaveSelect.value);
+  render();
+});
+
 volumeSlider.addEventListener("input", () => {
   masterVolume = Number(volumeSlider.value);
 });
@@ -385,6 +438,7 @@ optionsDialog.addEventListener("click", (e) => {
 
 populateRootSelect();
 populateScaleSelect();
+populateOctaveSelect();
 populateTuningGroup();
 volumeSlider.value = String(masterVolume);
 render();
