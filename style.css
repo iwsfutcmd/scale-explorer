@@ -382,6 +382,28 @@ input[type="range"] {
   opacity: 0.65;
 }
 
+/* For option groups with more than 2-3 choices (e.g. Timbre): a grid instead
+   of a single cramped row. */
+.segmented.wrap {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  height: auto;
+}
+
+.segmented.wrap button {
+  height: 2.75rem;
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+}
+
+.segmented.wrap button:nth-child(4n + 1) {
+  border-left: none;
+}
+
+.segmented.wrap button:nth-child(-n + 4) {
+  border-top: none;
+}
+
 .tuning-hint {
   margin: 0;
   font-size: 0.75rem;

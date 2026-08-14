@@ -288,51 +288,180 @@ function intervalLabel(tuningKey, degree, mode) {
 
 // --- Audio engine --------------------------------------------------------
 //
-// A fixed pool of oscillators is created once, up front, and left running
+// A fixed pool of voices is created once, up front, and left running
 // permanently (silent, gain 0) — the same approach audio_fun used. Taps only
-// retune an existing oscillator's frequency and ramp its gain, instead of
-// constructing a brand-new oscillator/gain node graph on every touch. Building
-// that graph fresh per tap (createOscillator + createGain + connect + start)
+// retune an existing voice and ramp its gain, instead of constructing a
+// brand-new node graph on every touch. Building that graph fresh per tap
 // was the main source of per-tap latency, especially pronounced on Firefox.
+//
+// Each voice's actual synthesis graph is swappable (see TIMBRES) — a plain
+// OscillatorNode for the native waveform types, or a small custom graph for
+// the richer ones: additive synthesis via createPeriodicWave (an exact
+// harmonic spectrum instead of a fixed waveform shape) for "Warm"/"Bright",
+// and 2-operator FM (one oscillator frequency-modulating another) for
+// "Electric Piano"/"Bell", which is what makes those two sound like
+// actual instruments rather than a tone — the modulation index (brightness)
+// decays over the note via setTargetAtTime, mimicking how a real EP or bell
+// gets duller as it's held, independent of the note's volume envelope.
 
 const VOICE_POOL_SIZE = 16;
 
-// The native OscillatorNode waveform types — all band-limited per spec (no
-// harsh aliasing), so no extra filtering is needed to make square/sawtooth
-// sound reasonable.
-const WAVEFORMS = [
-  { key: "sine", label: "Sine" },
-  { key: "triangle", label: "Triangle" },
-  { key: "square", label: "Square" },
-  { key: "sawtooth", label: "Sawtooth" },
-];
+function harmonicsToPeriodicWave(ctx, amplitudes) {
+  // Coefficients go in `imag`, not `real`: that puts each harmonic in sine
+  // phase (odd symmetry, starts at zero), which is how natural harmonic
+  // spectra are normally specified and matches the built-in waveform types'
+  // own definitions. Index 0 (DC offset) is always 0.
+  const real = new Float32Array(amplitudes.length + 1);
+  const imag = new Float32Array(amplitudes.length + 1);
+  amplitudes.forEach((amp, i) => {
+    imag[i + 1] = amp;
+  });
+  return ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+}
+
+function simpleOscTimbre(type) {
+  return (ctx) => {
+    const osc = ctx.createOscillator();
+    osc.type = type;
+    osc.start();
+    return {
+      output: osc,
+      setFrequency(freq, time) {
+        osc.frequency.setValueAtTime(freq, time);
+      },
+      dispose() {
+        osc.stop();
+        osc.disconnect();
+      },
+    };
+  };
+}
+
+function additiveTimbre(amplitudes) {
+  return (ctx) => {
+    const osc = ctx.createOscillator();
+    osc.setPeriodicWave(harmonicsToPeriodicWave(ctx, amplitudes));
+    osc.start();
+    return {
+      output: osc,
+      setFrequency(freq, time) {
+        osc.frequency.setValueAtTime(freq, time);
+      },
+      dispose() {
+        osc.stop();
+        osc.disconnect();
+      },
+    };
+  };
+}
+
+// ratio: modulator frequency as a multiple of the note's frequency (integer
+// ratios sound harmonic/instrument-like; non-integer ratios sound bell-like
+// and inharmonic). indexStart/indexEnd: modulation depth in Hz-per-Hz-of-
+// note-frequency, at note-on and after it decays. decayTime: how long that
+// decay takes (seconds, via an RC-like time constant, so it eases rather
+// than ramping linearly).
+function fmTimbre({ ratio, indexStart, indexEnd, decayTime }) {
+  return (ctx) => {
+    const carrier = ctx.createOscillator();
+    carrier.type = "sine";
+    const modulator = ctx.createOscillator();
+    modulator.type = "sine";
+    const modGain = ctx.createGain();
+    modulator.connect(modGain).connect(carrier.frequency);
+    carrier.start();
+    modulator.start();
+    return {
+      output: carrier,
+      setFrequency(freq, time) {
+        carrier.frequency.setValueAtTime(freq, time);
+        modulator.frequency.setValueAtTime(freq * ratio, time);
+        modGain.gain.cancelScheduledValues(time);
+        modGain.gain.setValueAtTime(freq * indexStart, time);
+        modGain.gain.setTargetAtTime(freq * indexEnd, time, decayTime);
+      },
+      dispose() {
+        carrier.stop();
+        modulator.stop();
+        carrier.disconnect();
+        modulator.disconnect();
+        modGain.disconnect();
+      },
+    };
+  };
+}
+
+const TIMBRES = {
+  sine: { label: "Sine", build: simpleOscTimbre("sine") },
+  triangle: { label: "Triangle", build: simpleOscTimbre("triangle") },
+  square: { label: "Square", build: simpleOscTimbre("square") },
+  sawtooth: { label: "Sawtooth", build: simpleOscTimbre("sawtooth") },
+  warm: {
+    label: "Warm",
+    // Fundamental-heavy with a fast rolloff — rounder and more mellow than
+    // a plain sine without turning buzzy.
+    build: additiveTimbre([1, 0.5, 0.22, 0.1, 0.05, 0.02]),
+  },
+  bright: {
+    label: "Bright",
+    // A gentler rolloff (1/n^1.2) than a true sawtooth's 1/n — richer than
+    // the basic waveforms but smoother than raw sawtooth.
+    build: additiveTimbre([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => 1 / n ** 1.2)),
+  },
+  epiano: {
+    label: "E. Piano",
+    build: fmTimbre({ ratio: 1, indexStart: 4, indexEnd: 0.3, decayTime: 0.35 }),
+  },
+  bell: {
+    label: "Bell",
+    // A non-integer ratio detunes the partials from the harmonic series,
+    // which is what makes FM bells sound bell-like instead of instrument-like.
+    build: fmTimbre({ ratio: 3.01, indexStart: 7, indexEnd: 1, decayTime: 1.1 }),
+  },
+};
 
 let audioCtx = null;
 let voicePool = [];
 
+function buildVoice(ctx, timbreKey) {
+  const graph = TIMBRES[timbreKey].build(ctx);
+  const gain = ctx.createGain();
+  gain.gain.value = 0;
+  graph.output.connect(gain).connect(ctx.destination);
+  return { graph, gain, busy: false, lastUsed: 0 };
+}
+
 function getAudioContext() {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "interactive" });
-    voicePool = Array.from({ length: VOICE_POOL_SIZE }, () => {
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = state.waveform;
-      gain.gain.value = 0;
-      osc.connect(gain).connect(audioCtx.destination);
-      osc.start();
-      return { osc, gain, busy: false, lastUsed: 0 };
-    });
+    voicePool = Array.from({ length: VOICE_POOL_SIZE }, () => buildVoice(audioCtx, state.timbre));
   }
   if (audioCtx.state === "suspended") audioCtx.resume();
   return audioCtx;
 }
 
-// Applies live, including to any currently-sounding voices — changing
-// osc.type mid-playback is glitch-free in Web Audio.
-function setWaveform(type) {
-  state.waveform = type;
+// Rebuilds every voice's synthesis graph, including currently-sounding
+// ones — there's no glitch-free way to swap a running oscillator's actual
+// waveform type when it's a custom PeriodicWave or an FM pair (unlike the
+// simple `osc.type = x` case), so a held note's timbre changes with a
+// small (~10ms) crossfade instead of instantaneously.
+function setTimbre(key) {
+  state.timbre = key;
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
   voicePool.forEach((v) => {
-    v.osc.type = type;
+    const wasBusy = v.busy;
+    const oldGainValue = v.gain.gain.value;
+    const oldGraph = v.graph;
+    v.gain.gain.cancelScheduledValues(now);
+    v.gain.gain.setValueAtTime(0, now);
+    v.graph = TIMBRES[key].build(audioCtx);
+    v.graph.output.connect(v.gain);
+    if (wasBusy) {
+      v.graph.setFrequency(v.lastFreq ?? 440, now);
+      v.gain.gain.linearRampToValueAtTime(oldGainValue, now + 0.01);
+    }
+    oldGraph.dispose();
   });
 }
 
@@ -354,7 +483,8 @@ function startNote(freq) {
   const ctx = getAudioContext();
   const voice = acquireVoice();
   const now = ctx.currentTime;
-  voice.osc.frequency.setValueAtTime(freq, now);
+  voice.lastFreq = freq;
+  voice.graph.setFrequency(freq, now);
   voice.gain.gain.cancelScheduledValues(now);
   voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
   voice.gain.gain.linearRampToValueAtTime(masterVolume, now + 0.008);
@@ -393,7 +523,7 @@ const octaveValueLabel = document.getElementById("octave-value");
 const tuningGroup = document.getElementById("tuning-group");
 const tuningHint = document.getElementById("tuning-hint");
 const intervalDisplayGroup = document.getElementById("interval-display-group");
-const waveformGroup = document.getElementById("waveform-group");
+const timbreGroup = document.getElementById("timbre-group");
 const volumeSlider = document.getElementById("volume-slider");
 const notesEl = document.getElementById("notes");
 const playScaleBtn = document.getElementById("play-scale");
@@ -421,7 +551,7 @@ let state = {
   visibleOctaves: 2,
   intervalDisplay: defaultIntervalDisplay("equal"),
   scalaEntry: null, // set to a parsed scala-archive.json entry to override scaleName
-  waveform: "sine",
+  timbre: "sine",
 };
 
 // Tracks the last tuning renderNotes() actually rendered with, so it can tell
@@ -454,25 +584,25 @@ function populateIntervalDisplayGroup() {
   updateIntervalDisplayUI();
 }
 
-function populateWaveformGroup() {
-  WAVEFORMS.forEach(({ key, label }) => {
+function populateTimbreGroup() {
+  Object.entries(TIMBRES).forEach(([key, { label }]) => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = label;
     btn.dataset.key = key;
     btn.role = "radio";
     btn.addEventListener("click", () => {
-      setWaveform(key);
-      updateWaveformUI();
+      setTimbre(key);
+      updateTimbreUI();
     });
-    waveformGroup.appendChild(btn);
+    timbreGroup.appendChild(btn);
   });
-  updateWaveformUI();
+  updateTimbreUI();
 }
 
-function updateWaveformUI() {
-  [...waveformGroup.children].forEach((b) => {
-    b.setAttribute("aria-checked", b.dataset.key === state.waveform ? "true" : "false");
+function updateTimbreUI() {
+  [...timbreGroup.children].forEach((b) => {
+    b.setAttribute("aria-checked", b.dataset.key === state.timbre ? "true" : "false");
   });
 }
 
@@ -965,6 +1095,6 @@ octaveSlider.value = String(state.visibleOctaves);
 octaveValueLabel.textContent = state.visibleOctaves.toFixed(1);
 populateTuningGroup();
 populateIntervalDisplayGroup();
-populateWaveformGroup();
+populateTimbreGroup();
 volumeSlider.value = String(masterVolume);
 render();
