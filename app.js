@@ -297,6 +297,16 @@ function intervalLabel(tuningKey, degree, mode) {
 
 const VOICE_POOL_SIZE = 16;
 
+// The native OscillatorNode waveform types — all band-limited per spec (no
+// harsh aliasing), so no extra filtering is needed to make square/sawtooth
+// sound reasonable.
+const WAVEFORMS = [
+  { key: "sine", label: "Sine" },
+  { key: "triangle", label: "Triangle" },
+  { key: "square", label: "Square" },
+  { key: "sawtooth", label: "Sawtooth" },
+];
+
 let audioCtx = null;
 let voicePool = [];
 
@@ -306,7 +316,7 @@ function getAudioContext() {
     voicePool = Array.from({ length: VOICE_POOL_SIZE }, () => {
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
-      osc.type = "sine";
+      osc.type = state.waveform;
       gain.gain.value = 0;
       osc.connect(gain).connect(audioCtx.destination);
       osc.start();
@@ -315,6 +325,15 @@ function getAudioContext() {
   }
   if (audioCtx.state === "suspended") audioCtx.resume();
   return audioCtx;
+}
+
+// Applies live, including to any currently-sounding voices — changing
+// osc.type mid-playback is glitch-free in Web Audio.
+function setWaveform(type) {
+  state.waveform = type;
+  voicePool.forEach((v) => {
+    v.osc.type = type;
+  });
 }
 
 function acquireVoice() {
@@ -374,6 +393,7 @@ const octaveValueLabel = document.getElementById("octave-value");
 const tuningGroup = document.getElementById("tuning-group");
 const tuningHint = document.getElementById("tuning-hint");
 const intervalDisplayGroup = document.getElementById("interval-display-group");
+const waveformGroup = document.getElementById("waveform-group");
 const volumeSlider = document.getElementById("volume-slider");
 const notesEl = document.getElementById("notes");
 const playScaleBtn = document.getElementById("play-scale");
@@ -401,6 +421,7 @@ let state = {
   visibleOctaves: 2,
   intervalDisplay: defaultIntervalDisplay("equal"),
   scalaEntry: null, // set to a parsed scala-archive.json entry to override scaleName
+  waveform: "sine",
 };
 
 // Tracks the last tuning renderNotes() actually rendered with, so it can tell
@@ -431,6 +452,28 @@ function populateIntervalDisplayGroup() {
     intervalDisplayGroup.appendChild(btn);
   });
   updateIntervalDisplayUI();
+}
+
+function populateWaveformGroup() {
+  WAVEFORMS.forEach(({ key, label }) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.dataset.key = key;
+    btn.role = "radio";
+    btn.addEventListener("click", () => {
+      setWaveform(key);
+      updateWaveformUI();
+    });
+    waveformGroup.appendChild(btn);
+  });
+  updateWaveformUI();
+}
+
+function updateWaveformUI() {
+  [...waveformGroup.children].forEach((b) => {
+    b.setAttribute("aria-checked", b.dataset.key === state.waveform ? "true" : "false");
+  });
 }
 
 function updateIntervalDisplayUI() {
@@ -922,5 +965,6 @@ octaveSlider.value = String(state.visibleOctaves);
 octaveValueLabel.textContent = state.visibleOctaves.toFixed(1);
 populateTuningGroup();
 populateIntervalDisplayGroup();
+populateWaveformGroup();
 volumeSlider.value = String(masterVolume);
 render();
