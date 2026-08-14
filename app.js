@@ -22,6 +22,7 @@ function gcd(a, b) {
 const TUNINGS = {
   equal: {
     label: "Equal Temperament",
+    steps: 12,
     // 12-tone equal temperament: each step is the 12th root of 2. Irrational —
     // no exact fraction, so `fractions` stays null.
     ratios: [...Array(12)].map((_, i) => 2 ** (i / 12)),
@@ -29,6 +30,7 @@ const TUNINGS = {
   },
   just: {
     label: "Just Intonation",
+    steps: 12,
     // 5-limit just intonation ratios, from Scales.svelte / ScaleKeyboard.svelte.
     fractions: [
       [1, 1], [16, 15], [9, 8], [6, 5], [5, 4], [4, 3],
@@ -37,12 +39,27 @@ const TUNINGS = {
   },
   pythagorean: {
     label: "Pythagorean (3-limit)",
+    steps: 12,
     // 3-limit ratios (powers of 3 and 2), from ChineseKeyboard.svelte's
     // exponentsChinese — also the exact ratios the Chinese pentatonic modes use.
     fractions: [
       [0, 0], [7, 11], [2, 3], [9, 14], [4, 6], [11, 17],
       [6, 9], [1, 1], [8, 12], [3, 4], [10, 15], [5, 7],
     ].map(([p3, p2]) => [3 ** p3, 2 ** p2]),
+  },
+  persian24: {
+    label: "Persian (24-tone)",
+    steps: 24,
+    // 24-tone equal temperament (quarter tones) — the standard practical
+    // approximation for Persian dastgah scales, whose neutral intervals fall
+    // between the 12 Western semitones. Not user-selectable directly (see
+    // `selectable` below): only reachable via a dastgah scale that locks to
+    // it, the same way Chinese modes lock to Pythagorean tuning, since
+    // Western/Chinese scales are defined in semitone units that would be
+    // misinterpreted under a 24-tone gamut.
+    ratios: [...Array(24)].map((_, i) => 2 ** (i / 24)),
+    fractions: null,
+    selectable: false,
   },
 };
 for (const tuning of Object.values(TUNINGS)) {
@@ -83,6 +100,22 @@ const SCALE_GROUPS = {
     "Zhi 徵 (IV)": { degrees: [0, 2, 5, 7, 9], tuning: "pythagorean" },
     "Yu 羽 (V)": { degrees: [0, 3, 5, 7, 10], tuning: "pythagorean" },
   },
+  // Six of the seven primary Persian dastgahs, from Wikipedia's "Dastgāh"
+  // article (its koron/flat-annotated note spellings, per the radif of Mirza
+  // Abdollah), converted to 24-tone quarter-tone degrees. Locked to the
+  // persian24 tuning since these are neutral (~150-cent) intervals, not
+  // representable in a 12-tone gamut. Shur, Bayat-e-Tork, and Nava share an
+  // identical pitch collection in this source (they're distinguished by
+  // melodic emphasis/hierarchy, not by which notes are available) — only
+  // Shur is included here since this tool can't model that distinction.
+  "Persian Dastgahs": {
+    "Shur (شور)": { degrees: [0, 4, 7, 10, 14, 18, 20], tuning: "persian24" },
+    "Segah (سه‌گاه)": { degrees: [0, 4, 7, 10, 14, 17, 20], tuning: "persian24" },
+    "Homayun (همایون)": { degrees: [0, 4, 6, 10, 14, 17, 22], tuning: "persian24" },
+    "Chahargah (چهارگاه)": { degrees: [0, 3, 8, 10, 14, 17, 22], tuning: "persian24" },
+    "Mahur (ماهور)": { degrees: [0, 4, 8, 10, 14, 18, 22], tuning: "persian24" },
+    "Rast-Panjgah (راست‌پنجگاه)": { degrees: [0, 4, 8, 10, 14, 18, 20], tuning: "persian24" },
+  },
 };
 
 function findScaleEntry(scaleName) {
@@ -105,39 +138,42 @@ function rootFrequency(rootIndex) {
 }
 
 // For N octaves, spread as evenly as possible below/above the root (extra
-// octave goes on top for even N), e.g. 3 -> [-12, 0, 12], 4 -> [-12, 0, 12, 24].
-function octaveOffsets(count) {
+// octave goes on top for even N), e.g. 3 steps of 12 -> [-12, 0, 12].
+// `steps` is the tuning's steps-per-octave (12 for everything except the
+// 24-tone Persian tuning), so this works the same way for either.
+function octaveOffsets(count, steps) {
   const below = Math.floor((count - 1) / 2);
   const above = Math.ceil((count - 1) / 2);
   const offsets = [];
-  for (let i = -below; i <= above; i++) offsets.push(i * 12);
+  for (let i = -below; i <= above; i++) offsets.push(i * steps);
   return offsets;
 }
 
 // The requested number of octaves, plus one closing note an octave above the
 // topmost one, so every run resolves back onto the root.
-function buildDegreeSequence(baseDegrees, octaveCount) {
-  const offsets = octaveOffsets(octaveCount);
+function buildDegreeSequence(baseDegrees, octaveCount, steps) {
+  const offsets = octaveOffsets(octaveCount, steps);
   const sequence = offsets.flatMap((offset) => baseDegrees.map((d) => d + offset));
-  sequence.push(offsets[offsets.length - 1] + 12);
+  sequence.push(offsets[offsets.length - 1] + steps);
   return sequence;
 }
 
 function degreeFrequency(rootFreq, tuningKey, degree) {
-  const semitone = ((degree % 12) + 12) % 12;
-  const octave = Math.floor(degree / 12);
-  return rootFreq * TUNINGS[tuningKey].ratios[semitone] * 2 ** octave;
+  const { steps, ratios } = TUNINGS[tuningKey];
+  const step = ((degree % steps) + steps) % steps;
+  const octave = Math.floor(degree / steps);
+  return rootFreq * ratios[step] * 2 ** octave;
 }
 
 // The reduced fraction for a degree under just/Pythagorean tuning (both are
-// exact ratios by construction). Null for equal temperament, which is
-// irrational and has no clean fraction.
+// exact ratios by construction). Null for tunings with no clean fraction
+// (equal temperament and the 24-tone Persian tuning are both irrational).
 function exactFraction(tuningKey, degree) {
   const tuning = TUNINGS[tuningKey];
   if (!tuning.fractions) return null;
-  const semitone = ((degree % 12) + 12) % 12;
-  const octave = Math.floor(degree / 12);
-  let [num, den] = tuning.fractions[semitone];
+  const step = ((degree % tuning.steps) + tuning.steps) % tuning.steps;
+  const octave = Math.floor(degree / tuning.steps);
+  let [num, den] = tuning.fractions[step];
   if (octave > 0) num *= 2 ** octave;
   else if (octave < 0) den *= 2 ** -octave;
   const g = gcd(num, den);
@@ -145,24 +181,25 @@ function exactFraction(tuningKey, degree) {
 }
 
 function defaultIntervalDisplay(tuningKey) {
-  return tuningKey === "equal" ? "cents" : "ratio";
+  return TUNINGS[tuningKey].fractions ? "ratio" : "cents";
 }
 
 // Interval label relative to the root, in whichever of the two representations
 // is requested. Cents are exact for equal temperament (a tempered semitone is
-// precisely 100 cents by definition) and rounded for just/Pythagorean. Ratio
-// mode falls back to a decimal multiplier for equal temperament, since it has
-// no exact fraction to show.
+// precisely 100 cents by definition, a Persian quarter tone precisely 50) and
+// rounded for just/Pythagorean. Ratio mode falls back to a decimal multiplier
+// for tunings with no exact fraction to show.
 function intervalLabel(tuningKey, degree, mode) {
+  const tuning = TUNINGS[tuningKey];
   const fraction = exactFraction(tuningKey, degree);
   if (mode === "cents") {
     if (fraction) return `${Math.round(1200 * Math.log2(fraction[0] / fraction[1]))}¢`;
-    return `${degree * 100}¢`;
+    return `${Math.round((degree * 1200) / tuning.steps)}¢`;
   }
   if (fraction) return `${fraction[0]}/${fraction[1]}`;
-  const semitone = ((degree % 12) + 12) % 12;
-  const octave = Math.floor(degree / 12);
-  return `×${(TUNINGS[tuningKey].ratios[semitone] * 2 ** octave).toFixed(3)}`;
+  const step = ((degree % tuning.steps) + tuning.steps) % tuning.steps;
+  const octave = Math.floor(degree / tuning.steps);
+  return `×${(tuning.ratios[step] * 2 ** octave).toFixed(3)}`;
 }
 
 // --- Audio engine --------------------------------------------------------
@@ -248,7 +285,8 @@ async function playScaleSequence(freqs) {
 
 const rootSelect = document.getElementById("root-select");
 const scaleSelect = document.getElementById("scale-select");
-const octaveSelect = document.getElementById("octave-select");
+const octaveSlider = document.getElementById("octave-slider");
+const octaveValueLabel = document.getElementById("octave-value");
 const tuningGroup = document.getElementById("tuning-group");
 const tuningHint = document.getElementById("tuning-hint");
 const intervalDisplayGroup = document.getElementById("interval-display-group");
@@ -259,8 +297,6 @@ const openOptionsBtn = document.getElementById("open-options");
 const optionsDialog = document.getElementById("options-dialog");
 const keyboardScrollbar = document.getElementById("keyboard-scrollbar");
 const scrollbarThumb = document.getElementById("scrollbar-thumb");
-
-const OCTAVE_CHOICES = [1, 2, 3, 4, 5];
 
 // The keyboard always renders this many octaves' worth of buttons, scrollable
 // left/right; `state.visibleOctaves` just controls how many of them are sized
@@ -330,14 +366,14 @@ function refreshIntervalLabels() {
   });
 }
 
-function populateOctaveSelect() {
-  OCTAVE_CHOICES.forEach((n) => {
-    const opt = document.createElement("option");
-    opt.value = n;
-    opt.textContent = `${n} octave${n === 1 ? "" : "s"} visible`;
-    octaveSelect.appendChild(opt);
-  });
-  octaveSelect.value = state.visibleOctaves;
+// Just resizes the buttons (via --visible-count) and the scroll thumb, both
+// cheap, without rebuilding the row or touching scroll position — this is
+// what runs on every tick of the octave slider, so it needs to stay smooth
+// during a drag rather than doing a full render() per tick.
+function updateVisibleCount() {
+  const { degrees } = findScaleEntry(state.scaleName);
+  notesEl.style.setProperty("--visible-count", state.visibleOctaves * degrees.length);
+  updateScrollThumb();
 }
 
 function populateRootSelect() {
@@ -365,8 +401,12 @@ function populateScaleSelect() {
   scaleSelect.value = state.scaleName;
 }
 
+// Tunings a scale can force via its `tuning` lock (see SCALE_GROUPS), keyed
+// the same way, aren't necessarily meant to be picked directly by the user —
+// persian24 only makes sense for scales already defined in quarter tones.
 function populateTuningGroup() {
-  Object.entries(TUNINGS).forEach(([key, { label }]) => {
+  Object.entries(TUNINGS).forEach(([key, { label, selectable }]) => {
+    if (selectable === false) return;
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = label.replace(" Temperament", "").replace(" Intonation", "");
@@ -381,6 +421,11 @@ function populateTuningGroup() {
   });
 }
 
+const TUNING_LOCK_MESSAGES = {
+  pythagorean: "Locked to Pythagorean (3-limit) — the exact ratios Chinese pentatonic modes use.",
+  persian24: "Locked to 24-tone equal temperament — the quarter tones Persian dastgahs use.",
+};
+
 function updateTuningUI(fixedTuning) {
   const activeKey = fixedTuning || state.tuning;
   [...tuningGroup.children].forEach((b) => {
@@ -388,22 +433,57 @@ function updateTuningUI(fixedTuning) {
     b.disabled = Boolean(fixedTuning);
   });
   tuningHint.hidden = !fixedTuning;
+  if (fixedTuning) tuningHint.textContent = TUNING_LOCK_MESSAGES[fixedTuning] ?? "";
 }
 
-function noteName(rootIndex, semitoneOffset) {
-  return NOTE_NAMES[(rootIndex + semitoneOffset) % 12];
+// Half-flat (koron) mark for Persian quarter tones — see pitchLabel below.
+const KORON = "↓";
+
+// The note name for a degree, in whichever gamut the tuning uses. 12-step
+// tunings map straight onto NOTE_NAMES. In the 24-step Persian tuning, even
+// quarter-tone positions are the same 12 standard pitch classes, and odd
+// (in-between) positions are labeled as the koron (half-flat) of the note
+// above — the same convention Wikipedia's Dastgah article's note spellings
+// use (e.g. "Ep" for E-koron), which is where this app's dastgah data comes
+// from.
+function pitchLabel(rootIndex, degree, steps) {
+  if (steps !== 24) {
+    const semitone = ((degree % steps) + steps) % steps;
+    return NOTE_NAMES[(rootIndex + semitone) % 12];
+  }
+  const q = (((rootIndex * 2 + degree) % 24) + 24) % 24;
+  if (q % 2 === 0) return NOTE_NAMES[(q / 2) % 12];
+  return `${NOTE_NAMES[((q + 1) / 2) % 12]}${KORON}`;
 }
 
-function octaveLabel(degree) {
-  const octave = Math.floor(degree / 12);
+function octaveLabel(degree, steps) {
+  const octave = Math.floor(degree / steps);
   if (octave < 0) return String(octave);
   if (octave > 0) return `+${octave}`;
   return "";
 }
 
+// "Play scale" only plays roughly the currently-visible window (rounded to a
+// whole number of octaves, since visibleOctaves is a continuous zoom level
+// and "play half an extra octave" isn't a coherent run), not the whole
+// scrollable range, so it stays a reasonable length. Kept separate from
+// renderNotes() so it can be kept in sync on every octave-slider tick without
+// a full DOM rebuild.
+function updateCurrentFrequencies() {
+  const { degrees, fixedTuning } = findScaleEntry(state.scaleName);
+  const effectiveTuning = fixedTuning || state.tuning;
+  const steps = TUNINGS[effectiveTuning].steps;
+  const root = rootFrequency(state.root);
+  const playOctaves = Math.max(1, Math.round(state.visibleOctaves));
+  currentFrequencies = buildDegreeSequence(degrees, playOctaves, steps).map((d) =>
+    degreeFrequency(root, effectiveTuning, d)
+  );
+}
+
 function renderNotes() {
   const { degrees, fixedTuning, groupName } = findScaleEntry(state.scaleName);
   const effectiveTuning = fixedTuning || state.tuning;
+  const steps = TUNINGS[effectiveTuning].steps;
   const showChinese = groupName === "Chinese Pentatonic Modes";
   const root = rootFrequency(state.root);
 
@@ -414,15 +494,10 @@ function renderNotes() {
   }
 
   // The full scrollable keyboard: a wide, fixed range of octaves.
-  const degreeSeq = buildDegreeSequence(degrees, TOTAL_OCTAVE_RANGE);
+  const degreeSeq = buildDegreeSequence(degrees, TOTAL_OCTAVE_RANGE, steps);
   const allFrequencies = degreeSeq.map((d) => degreeFrequency(root, effectiveTuning, d));
 
-  // "Play scale" only plays the currently-visible window, not the whole
-  // scrollable range, so it stays a reasonable length.
-  currentFrequencies = buildDegreeSequence(degrees, state.visibleOctaves).map((d) =>
-    degreeFrequency(root, effectiveTuning, d)
-  );
-
+  updateCurrentFrequencies();
   updateTuningUI(fixedTuning);
 
   const notesPerOctave = degrees.length;
@@ -431,25 +506,25 @@ function renderNotes() {
   notesEl.innerHTML = "";
   degreeSeq.forEach((degree, i) => {
     const freq = allFrequencies[i];
-    const semitone = ((degree % 12) + 12) % 12;
+    const step = ((degree % steps) + steps) % steps;
     const btn = document.createElement("button");
     btn.className = "note-btn";
     btn.type = "button";
     btn.dataset.freq = String(freq);
     btn.dataset.degree = String(degree);
-    if (semitone === 0) btn.classList.add("root");
+    if (step === 0) btn.classList.add("root");
 
     const octEl = document.createElement("span");
     octEl.className = "oct";
-    octEl.textContent = octaveLabel(degree);
+    octEl.textContent = octaveLabel(degree, steps);
 
     const nameEl = document.createElement("span");
     nameEl.className = "name";
-    nameEl.textContent = noteName(state.root, semitone);
+    nameEl.textContent = pitchLabel(state.root, degree, steps);
 
     const hanziEl = document.createElement("span");
     hanziEl.className = "hanzi";
-    hanziEl.textContent = CHINESE_NAMES[(state.root + semitone) % 12];
+    hanziEl.textContent = CHINESE_NAMES[(state.root + step) % 12];
 
     const ratioEl = document.createElement("span");
     ratioEl.className = "ratio";
@@ -465,25 +540,26 @@ function renderNotes() {
 
     btn.setAttribute(
       "aria-label",
-      `${noteName(state.root, semitone)}${showChinese ? " " + hanziEl.textContent : ""}, ${ratioEl.textContent}, ${freqEl.textContent}`
+      `${nameEl.textContent}${showChinese ? " " + hanziEl.textContent : ""}, ${ratioEl.textContent}, ${freqEl.textContent}`
     );
 
     notesEl.appendChild(btn);
   });
 
-  scrollToVisibleWindow(notesPerOctave);
+  scrollToVisibleWindow(notesPerOctave, steps);
   updateScrollThumb();
 }
 
-// Scroll so the octaves centered on the root are in view by default, leaving
-// the rest of TOTAL_OCTAVE_RANGE reachable by scrolling left/right.
-function scrollToVisibleWindow(notesPerOctave) {
-  const totalOffsets = octaveOffsets(TOTAL_OCTAVE_RANGE);
-  const windowOffsets = octaveOffsets(state.visibleOctaves);
-  const startOffsetIndex = totalOffsets.indexOf(windowOffsets[0]);
-  const startButtonIndex = startOffsetIndex * notesPerOctave;
-  const target = notesEl.children[startButtonIndex];
-  if (target) notesEl.scrollLeft = target.offsetLeft;
+// Center the view on the root note by default, leaving the rest of
+// TOTAL_OCTAVE_RANGE reachable by scrolling left/right. Independent of
+// visibleOctaves (a continuous zoom level, not a window position) — zooming
+// in or out shouldn't itself jump the scroll position.
+function scrollToVisibleWindow(notesPerOctave, steps) {
+  const totalOffsets = octaveOffsets(TOTAL_OCTAVE_RANGE, steps);
+  const rootOffsetIndex = totalOffsets.indexOf(0);
+  const rootButtonIndex = rootOffsetIndex * notesPerOctave;
+  const target = notesEl.children[rootButtonIndex];
+  if (target) notesEl.scrollLeft = target.offsetLeft + target.offsetWidth / 2 - notesEl.clientWidth / 2;
 }
 
 // --- Note interaction (tap-and-hold, drag-across-keys slur) --------------
@@ -606,9 +682,11 @@ scaleSelect.addEventListener("change", () => {
   render();
 });
 
-octaveSelect.addEventListener("change", () => {
-  state.visibleOctaves = Number(octaveSelect.value);
-  render();
+octaveSlider.addEventListener("input", () => {
+  state.visibleOctaves = Number(octaveSlider.value);
+  octaveValueLabel.textContent = state.visibleOctaves.toFixed(1);
+  updateVisibleCount();
+  updateCurrentFrequencies();
 });
 
 volumeSlider.addEventListener("input", () => {
@@ -631,7 +709,8 @@ optionsDialog.addEventListener("click", (e) => {
 
 populateRootSelect();
 populateScaleSelect();
-populateOctaveSelect();
+octaveSlider.value = String(state.visibleOctaves);
+octaveValueLabel.textContent = state.visibleOctaves.toFixed(1);
 populateTuningGroup();
 populateIntervalDisplayGroup();
 volumeSlider.value = String(masterVolume);
