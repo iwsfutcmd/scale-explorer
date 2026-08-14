@@ -239,11 +239,16 @@ const optionsDialog = document.getElementById("options-dialog");
 
 const OCTAVE_CHOICES = [1, 2, 3, 4, 5];
 
+// The keyboard always renders this many octaves' worth of buttons, scrollable
+// left/right; `state.visibleOctaves` just controls how many of them are sized
+// to fit on screen at once (i.e. how wide each button is), not how many exist.
+const TOTAL_OCTAVE_RANGE = 9;
+
 let state = {
   root: 0, // index into NOTE_NAMES
   tuning: "equal",
   scaleName: "Major (Ionian)",
-  octaves: 3,
+  visibleOctaves: 3,
 };
 
 let currentFrequencies = [];
@@ -253,10 +258,10 @@ function populateOctaveSelect() {
   OCTAVE_CHOICES.forEach((n) => {
     const opt = document.createElement("option");
     opt.value = n;
-    opt.textContent = `${n} octave${n === 1 ? "" : "s"}`;
+    opt.textContent = `${n} octave${n === 1 ? "" : "s"} visible`;
     octaveSelect.appendChild(opt);
   });
-  octaveSelect.value = state.octaves;
+  octaveSelect.value = state.visibleOctaves;
 }
 
 function populateRootSelect() {
@@ -324,14 +329,26 @@ function renderNotes() {
   const { degrees, fixedTuning, groupName } = findScaleEntry(state.scaleName);
   const effectiveTuning = fixedTuning || state.tuning;
   const showChinese = groupName === "Chinese Pentatonic Modes";
-  const degreeSeq = buildDegreeSequence(degrees, state.octaves);
   const root = rootFrequency(state.root);
-  currentFrequencies = degreeSeq.map((d) => degreeFrequency(root, effectiveTuning, d));
+
+  // The full scrollable keyboard: a wide, fixed range of octaves.
+  const degreeSeq = buildDegreeSequence(degrees, TOTAL_OCTAVE_RANGE);
+  const allFrequencies = degreeSeq.map((d) => degreeFrequency(root, effectiveTuning, d));
+
+  // "Play scale" only plays the currently-visible window, not the whole
+  // scrollable range, so it stays a reasonable length.
+  currentFrequencies = buildDegreeSequence(degrees, state.visibleOctaves).map((d) =>
+    degreeFrequency(root, effectiveTuning, d)
+  );
+
   updateTuningUI(fixedTuning);
+
+  const notesPerOctave = degrees.length;
+  notesEl.style.setProperty("--visible-count", state.visibleOctaves * notesPerOctave);
 
   notesEl.innerHTML = "";
   degreeSeq.forEach((degree, i) => {
-    const freq = currentFrequencies[i];
+    const freq = allFrequencies[i];
     const semitone = ((degree % 12) + 12) % 12;
     const btn = document.createElement("button");
     btn.className = "note-btn";
@@ -370,6 +387,19 @@ function renderNotes() {
     attachNoteHandlers(btn, () => freq);
     notesEl.appendChild(btn);
   });
+
+  scrollToVisibleWindow(notesPerOctave);
+}
+
+// Scroll so the octaves centered on the root are in view by default, leaving
+// the rest of TOTAL_OCTAVE_RANGE reachable by scrolling left/right.
+function scrollToVisibleWindow(notesPerOctave) {
+  const totalOffsets = octaveOffsets(TOTAL_OCTAVE_RANGE);
+  const windowOffsets = octaveOffsets(state.visibleOctaves);
+  const startOffsetIndex = totalOffsets.indexOf(windowOffsets[0]);
+  const startButtonIndex = startOffsetIndex * notesPerOctave;
+  const target = notesEl.children[startButtonIndex];
+  if (target) notesEl.scrollLeft = target.offsetLeft;
 }
 
 function attachNoteHandlers(btn, getFreq) {
@@ -414,7 +444,7 @@ scaleSelect.addEventListener("change", () => {
 });
 
 octaveSelect.addEventListener("change", () => {
-  state.octaves = Number(octaveSelect.value);
+  state.visibleOctaves = Number(octaveSelect.value);
   render();
 });
 

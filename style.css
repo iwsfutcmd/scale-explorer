@@ -94,14 +94,19 @@ body {
 }
 
 /* --- Note row -------------------------------------------------------
-   Guaranteed single row (mobile is assumed landscape): buttons never wrap
-   and never scroll, they just divide the available width evenly and shrink.
-   `min-height: 0` / `min-width: 0` override flexbox's default "don't shrink
-   below content size" behavior, which is what let content force the row to
-   overflow instead of fitting — most visible on Firefox. Each button is its
-   own size container so its inner text can progressively drop the least
-   important lines (freq, then ratio/hanzi, then the octave badge) as it
-   narrows, rather than overflowing or wrapping. */
+   Single row (mobile is assumed landscape) that never wraps. Buttons are
+   sized as a fixed fraction of the row's width via --visible-count (set in
+   JS to visibleOctaves * notesPerOctave), not shrink-to-fit — so the full
+   TOTAL_OCTAVE_RANGE of buttons overflows horizontally and the row scrolls
+   to reach octaves beyond the visible window. `touch-action: pan-x` lets the
+   browser handle that horizontal drag as a native scroll (which cancels any
+   held note via the pointercancel/lostpointercapture handlers below) while
+   still delivering pointerdown/up immediately for a stationary tap-and-hold.
+   `min-height: 0` on the row overrides flexbox's default "don't shrink below
+   content size" behavior, which Firefox enforces more strictly than Chrome.
+   Each button is its own size container so its inner text can progressively
+   drop the least important lines (freq, then ratio/hanzi, then the octave
+   badge) as it narrows, rather than overflowing or wrapping. */
 
 .notes {
   flex: 1 1 auto;
@@ -112,14 +117,18 @@ body {
   align-items: stretch;
   gap: 0.3rem;
   padding: 0.5rem calc(0.5rem + env(safe-area-inset-right)) calc(0.5rem + env(safe-area-inset-bottom)) calc(0.5rem + env(safe-area-inset-left));
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
 }
 
 .note-btn {
   container-type: inline-size;
-  flex: 1 1 0;
+  flex: 0 0 calc(100% / var(--visible-count, 21));
   min-width: 0;
   overflow: hidden;
+  scroll-snap-align: start;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg-panel);
@@ -132,7 +141,7 @@ body {
   padding: 0.25rem 0.1rem;
   cursor: pointer;
   user-select: none;
-  touch-action: none;
+  touch-action: pan-x;
   transition: transform 0.05s ease, background 0.08s ease;
 }
 
