@@ -260,9 +260,9 @@ body {
   opacity: 0.85;
 }
 
-/* --- Options dialog (bottom sheet) --------------------------------- */
+/* --- Dialogs (bottom sheets) ---------------------------------------- */
 
-dialog#options-dialog {
+dialog {
   position: fixed;
   inset: 0;
   width: 100%;
@@ -276,11 +276,11 @@ dialog#options-dialog {
   overflow: visible;
 }
 
-dialog#options-dialog:not([open]) {
+dialog:not([open]) {
   display: none;
 }
 
-dialog#options-dialog::backdrop {
+dialog::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
 
@@ -385,5 +385,69 @@ input[type="range"] {
 .tuning-hint {
   margin: 0;
   font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.browse-btn {
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.65rem;
+  border-radius: 8px;
+  border: 1px dashed var(--border);
+  background: var(--bg);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+/* --- Scala archive browser ------------------------------------------ */
+
+.scala-sheet {
+  /* Overrides .sheet's own scrolling: the search box stays pinned and only
+     the results list scrolls, so search never scrolls out of view. */
+  max-height: 85vh;
+  overflow-y: hidden;
+}
+
+#scala-search {
+  font: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.6rem;
+  min-height: 2.75rem;
+  color: var(--text);
+}
+
+.scala-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.scala-result {
+  text-align: left;
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 0.5rem 0.7rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.scala-result .result-id {
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.scala-result .result-desc {
+  font-size: 0.78rem;
   color: var(--text-dim);
 }

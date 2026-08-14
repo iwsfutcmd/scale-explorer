@@ -19,10 +19,18 @@ function gcd(a, b) {
   return b === 0 ? a : gcd(b, a % b);
 }
 
+// Every tuning repeats at some `period` (almost always the octave, 2/1 —
+// except some Scala-archive scales, which can repeat at a tritave, a fifth,
+// etc). `fractions` is either null (no step has an exact ratio) or an array
+// with one entry per step, each itself either an [n, d] pair or null — Scala
+// scales routinely mix exact-ratio and cents-only steps in the same scale.
+const OCTAVE_PERIOD = { cents: 1200, ratio: [2, 1] };
+
 const TUNINGS = {
   equal: {
     label: "Equal Temperament",
     steps: 12,
+    period: OCTAVE_PERIOD,
     // 12-tone equal temperament: each step is the 12th root of 2. Irrational —
     // no exact fraction, so `fractions` stays null.
     ratios: [...Array(12)].map((_, i) => 2 ** (i / 12)),
@@ -31,6 +39,7 @@ const TUNINGS = {
   just: {
     label: "Just Intonation",
     steps: 12,
+    period: OCTAVE_PERIOD,
     // 5-limit just intonation ratios, from Scales.svelte / ScaleKeyboard.svelte.
     fractions: [
       [1, 1], [16, 15], [9, 8], [6, 5], [5, 4], [4, 3],
@@ -40,6 +49,7 @@ const TUNINGS = {
   pythagorean: {
     label: "Pythagorean (3-limit)",
     steps: 12,
+    period: OCTAVE_PERIOD,
     // 3-limit ratios (powers of 3 and 2), from ChineseKeyboard.svelte's
     // exponentsChinese — also the exact ratios the Chinese pentatonic modes use.
     fractions: [
@@ -50,6 +60,7 @@ const TUNINGS = {
   persian24: {
     label: "Persian (24-tone)",
     steps: 24,
+    period: OCTAVE_PERIOD,
     // 24-tone equal temperament (quarter tones) — the standard practical
     // approximation for Persian dastgah scales, whose neutral intervals fall
     // between the 12 Western semitones. Not user-selectable directly (see
@@ -61,10 +72,20 @@ const TUNINGS = {
     fractions: null,
     selectable: false,
   },
+  // Populated dynamically by activateScalaTuning() when a scale is picked
+  // from the Scala archive browser — see that function for the shape.
+  scala: {
+    label: "Scala Archive",
+    steps: 1,
+    period: OCTAVE_PERIOD,
+    ratios: [1],
+    fractions: null,
+    selectable: false,
+  },
 };
 for (const tuning of Object.values(TUNINGS)) {
   if (tuning.fractions) {
-    tuning.ratios = tuning.fractions.map(([n, d]) => n / d);
+    tuning.ratios = tuning.fractions.map((f) => (f ? f[0] / f[1] : null));
   }
 }
 
@@ -130,6 +151,45 @@ function findScaleEntry(scaleName) {
   return { degrees: SCALE_GROUPS["Western"]["Major (Ionian)"], fixedTuning: null, groupName: "Western" };
 }
 
+// Converts one parsed Scala-archive entry (see scala-archive.json / the
+// scl format's own docs) into our TUNINGS shape. A Scala file lists `n`
+// pitches above the implicit 1/1 root; the last of those is the repeat
+// period (almost always 2/1, but not always — see `period`). So step 0 is
+// the root (ratio 1/1, exact), steps 1..n-1 are the file's first n-1
+// pitches, and the period is handled separately rather than being one of
+// the `steps` entries (matching how the octave is handled for every other
+// tuning here).
+function buildScalaTuning(entry) {
+  const stepFractions = [[1, 1], ...entry.ratio.slice(0, -1)];
+  const hasAnyFraction = stepFractions.some((f) => f !== null);
+  return {
+    label: `Scala: ${entry.id}`,
+    steps: entry.n,
+    period: { cents: entry.cents[entry.cents.length - 1], ratio: entry.ratio[entry.ratio.length - 1] },
+    ratios: [1, ...entry.cents.slice(0, -1).map((c) => 2 ** (c / 1200))],
+    fractions: hasAnyFraction ? stepFractions : null,
+    selectable: false,
+  };
+}
+
+// The currently active scale, whether from the curated SCALE_GROUPS or from
+// a Scala-archive pick (state.scalaEntry takes priority when set). Scala
+// picks reuse the same { degrees, fixedTuning, groupName } shape by locking
+// to the "scala" tuning slot, which this (re-)populates from the entry's
+// data on every call — cheap, and keeps a single source of truth instead of
+// two copies that could drift.
+function getActiveScale() {
+  if (state.scalaEntry) {
+    TUNINGS.scala = buildScalaTuning(state.scalaEntry);
+    return {
+      degrees: [...Array(state.scalaEntry.n)].map((_, i) => i),
+      fixedTuning: "scala",
+      groupName: "Scala Archive",
+    };
+  }
+  return findScaleEntry(state.scaleName);
+}
+
 const REF_A4 = 440;
 const A_INDEX = NOTE_NAMES.indexOf("A");
 
@@ -158,24 +218,47 @@ function buildDegreeSequence(baseDegrees, octaveCount, steps) {
   return sequence;
 }
 
-function degreeFrequency(rootFreq, tuningKey, degree) {
-  const { steps, ratios } = TUNINGS[tuningKey];
-  const step = ((degree % steps) + steps) % steps;
-  const octave = Math.floor(degree / steps);
-  return rootFreq * ratios[step] * 2 ** octave;
+// The multiplier for repeating `octave` periods — almost always 2 (an
+// octave), but Scala-archive scales can repeat at other intervals (a
+// tritave, a fifth, ...), so this is never hardcoded.
+function periodMultiplier(tuning) {
+  return 2 ** (tuning.period.cents / 1200);
 }
 
-// The reduced fraction for a degree under just/Pythagorean tuning (both are
-// exact ratios by construction). Null for tunings with no clean fraction
-// (equal temperament and the 24-tone Persian tuning are both irrational).
+function stepOf(tuning, degree) {
+  return ((degree % tuning.steps) + tuning.steps) % tuning.steps;
+}
+
+function octaveOf(tuning, degree) {
+  return Math.floor(degree / tuning.steps);
+}
+
+function degreeFrequency(rootFreq, tuningKey, degree) {
+  const tuning = TUNINGS[tuningKey];
+  const step = stepOf(tuning, degree);
+  const octave = octaveOf(tuning, degree);
+  return rootFreq * tuning.ratios[step] * periodMultiplier(tuning) ** octave;
+}
+
+// The reduced fraction for a degree, where every scale degree in play (root,
+// this step, and the period itself) has an exact ratio — true by
+// construction for just/Pythagorean tuning, true for most but not all steps
+// of a Scala-archive scale (which routinely mixes exact-ratio and
+// cents-only steps in the same file), and never true for equal temperament.
 function exactFraction(tuningKey, degree) {
   const tuning = TUNINGS[tuningKey];
   if (!tuning.fractions) return null;
-  const step = ((degree % tuning.steps) + tuning.steps) % tuning.steps;
-  const octave = Math.floor(degree / tuning.steps);
-  let [num, den] = tuning.fractions[step];
-  if (octave > 0) num *= 2 ** octave;
-  else if (octave < 0) den *= 2 ** -octave;
+  const step = stepOf(tuning, degree);
+  const entry = tuning.fractions[step];
+  if (!entry) return null;
+  const octave = octaveOf(tuning, degree);
+  let [num, den] = entry;
+  if (octave !== 0) {
+    if (!tuning.period.ratio) return null; // period itself isn't a clean ratio
+    const [pn, pd] = tuning.period.ratio;
+    if (octave > 0) { num *= pn ** octave; den *= pd ** octave; }
+    else { num *= pd ** -octave; den *= pn ** -octave; }
+  }
   const g = gcd(num, den);
   return [num / g, den / g];
 }
@@ -187,19 +270,20 @@ function defaultIntervalDisplay(tuningKey) {
 // Interval label relative to the root, in whichever of the two representations
 // is requested. Cents are exact for equal temperament (a tempered semitone is
 // precisely 100 cents by definition, a Persian quarter tone precisely 50) and
-// rounded for just/Pythagorean. Ratio mode falls back to a decimal multiplier
-// for tunings with no exact fraction to show.
+// rounded for just/Pythagorean/Scala. Ratio mode falls back to a decimal
+// multiplier for steps with no exact fraction to show.
 function intervalLabel(tuningKey, degree, mode) {
   const tuning = TUNINGS[tuningKey];
   const fraction = exactFraction(tuningKey, degree);
+  const step = stepOf(tuning, degree);
+  const octave = octaveOf(tuning, degree);
   if (mode === "cents") {
     if (fraction) return `${Math.round(1200 * Math.log2(fraction[0] / fraction[1]))}¢`;
-    return `${Math.round((degree * 1200) / tuning.steps)}¢`;
+    const cents = 1200 * Math.log2(tuning.ratios[step]) + tuning.period.cents * octave;
+    return `${Math.round(cents)}¢`;
   }
   if (fraction) return `${fraction[0]}/${fraction[1]}`;
-  const step = ((degree % tuning.steps) + tuning.steps) % tuning.steps;
-  const octave = Math.floor(degree / tuning.steps);
-  return `×${(tuning.ratios[step] * 2 ** octave).toFixed(3)}`;
+  return `×${(tuning.ratios[step] * periodMultiplier(tuning) ** octave).toFixed(3)}`;
 }
 
 // --- Audio engine --------------------------------------------------------
@@ -297,6 +381,13 @@ const openOptionsBtn = document.getElementById("open-options");
 const optionsDialog = document.getElementById("options-dialog");
 const keyboardScrollbar = document.getElementById("keyboard-scrollbar");
 const scrollbarThumb = document.getElementById("scrollbar-thumb");
+const browseScalaBtn = document.getElementById("browse-scala-btn");
+const activeScalaLabel = document.getElementById("active-scala-label");
+const scalaDialog = document.getElementById("scala-dialog");
+const closeScalaDialogBtn = document.getElementById("close-scala-dialog");
+const scalaSearchInput = document.getElementById("scala-search");
+const scalaStatus = document.getElementById("scala-status");
+const scalaResultsEl = document.getElementById("scala-results");
 
 // The keyboard always renders this many octaves' worth of buttons, scrollable
 // left/right; `state.visibleOctaves` just controls how many of them are sized
@@ -309,6 +400,7 @@ let state = {
   scaleName: "Major (Ionian)",
   visibleOctaves: 2,
   intervalDisplay: defaultIntervalDisplay("equal"),
+  scalaEntry: null, // set to a parsed scala-archive.json entry to override scaleName
 };
 
 // Tracks the last tuning renderNotes() actually rendered with, so it can tell
@@ -351,7 +443,7 @@ function updateIntervalDisplayUI() {
 // rebuilding the row or resetting scroll position — used when only the
 // interval display mode changes, since that shouldn't jump the keyboard.
 function refreshIntervalLabels() {
-  const { fixedTuning, groupName } = findScaleEntry(state.scaleName);
+  const { fixedTuning, groupName } = getActiveScale();
   const effectiveTuning = fixedTuning || state.tuning;
   const showChinese = groupName === "Chinese Pentatonic Modes";
   [...notesEl.children].forEach((btn) => {
@@ -371,7 +463,7 @@ function refreshIntervalLabels() {
 // what runs on every tick of the octave slider, so it needs to stay smooth
 // during a drag rather than doing a full render() per tick.
 function updateVisibleCount() {
-  const { degrees } = findScaleEntry(state.scaleName);
+  const { degrees } = getActiveScale();
   notesEl.style.setProperty("--visible-count", state.visibleOctaves * degrees.length);
   updateScrollThumb();
 }
@@ -424,6 +516,7 @@ function populateTuningGroup() {
 const TUNING_LOCK_MESSAGES = {
   pythagorean: "Locked to Pythagorean (3-limit) — the exact ratios Chinese pentatonic modes use.",
   persian24: "Locked to 24-tone equal temperament — the quarter tones Persian dastgahs use.",
+  scala: () => `Locked to this scale's own tuning, from the Scala archive (${state.scalaEntry?.id}.scl).`,
 };
 
 function updateTuningUI(fixedTuning) {
@@ -433,7 +526,10 @@ function updateTuningUI(fixedTuning) {
     b.disabled = Boolean(fixedTuning);
   });
   tuningHint.hidden = !fixedTuning;
-  if (fixedTuning) tuningHint.textContent = TUNING_LOCK_MESSAGES[fixedTuning] ?? "";
+  if (fixedTuning) {
+    const message = TUNING_LOCK_MESSAGES[fixedTuning];
+    tuningHint.textContent = (typeof message === "function" ? message() : message) ?? "";
+  }
 }
 
 // Half-flat (koron) mark for Persian quarter tones — see pitchLabel below.
@@ -445,15 +541,19 @@ const KORON = "↓";
 // (in-between) positions are labeled as the koron (half-flat) of the note
 // above — the same convention Wikipedia's Dastgah article's note spellings
 // use (e.g. "Ep" for E-koron), which is where this app's dastgah data comes
-// from.
+// from. Any other step count (a Scala-archive scale, an arbitrary gamut with
+// no standard note names) falls back to a plain 1-indexed scale-degree number.
 function pitchLabel(rootIndex, degree, steps) {
-  if (steps !== 24) {
+  if (steps === 12) {
     const semitone = ((degree % steps) + steps) % steps;
     return NOTE_NAMES[(rootIndex + semitone) % 12];
   }
-  const q = (((rootIndex * 2 + degree) % 24) + 24) % 24;
-  if (q % 2 === 0) return NOTE_NAMES[(q / 2) % 12];
-  return `${NOTE_NAMES[((q + 1) / 2) % 12]}${KORON}`;
+  if (steps === 24) {
+    const q = (((rootIndex * 2 + degree) % 24) + 24) % 24;
+    if (q % 2 === 0) return NOTE_NAMES[(q / 2) % 12];
+    return `${NOTE_NAMES[((q + 1) / 2) % 12]}${KORON}`;
+  }
+  return String((((degree % steps) + steps) % steps) + 1);
 }
 
 function octaveLabel(degree, steps) {
@@ -470,7 +570,7 @@ function octaveLabel(degree, steps) {
 // renderNotes() so it can be kept in sync on every octave-slider tick without
 // a full DOM rebuild.
 function updateCurrentFrequencies() {
-  const { degrees, fixedTuning } = findScaleEntry(state.scaleName);
+  const { degrees, fixedTuning } = getActiveScale();
   const effectiveTuning = fixedTuning || state.tuning;
   const steps = TUNINGS[effectiveTuning].steps;
   const root = rootFrequency(state.root);
@@ -481,7 +581,7 @@ function updateCurrentFrequencies() {
 }
 
 function renderNotes() {
-  const { degrees, fixedTuning, groupName } = findScaleEntry(state.scaleName);
+  const { degrees, fixedTuning, groupName } = getActiveScale();
   const effectiveTuning = fixedTuning || state.tuning;
   const steps = TUNINGS[effectiveTuning].steps;
   const showChinese = groupName === "Chinese Pentatonic Modes";
@@ -668,6 +768,112 @@ keyboardScrollbar.addEventListener("lostpointercapture", endScrollbarDrag);
 notesEl.addEventListener("scroll", updateScrollThumb, { passive: true });
 window.addEventListener("resize", updateScrollThumb);
 
+// --- Scala archive browser -------------------------------------------
+//
+// scala-archive.json holds all 5,401 scales from the Huygens-Fokker
+// Foundation's Scala archive (huygens-fokker.org/scala), parsed from the
+// .scl format — see tools/build_scala_archive.py. It's ~2MB, so it's fetched
+// once, lazily, the first time this dialog opens rather than on page load.
+
+const SCALA_RESULT_CAP = 150; // render at most this many rows at a time
+
+let scalaArchive = null; // null until loaded; array of {id, desc, n, cents, ratio}
+let scalaLoadPromise = null;
+
+function loadScalaArchive() {
+  if (!scalaLoadPromise) {
+    scalaLoadPromise = fetch("scala-archive.json")
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        scalaArchive = data;
+        return data;
+      });
+  }
+  return scalaLoadPromise;
+}
+
+function renderScalaResults(query) {
+  if (!scalaArchive) return;
+  const q = query.trim().toLowerCase();
+  const matches = q
+    ? scalaArchive.filter((e) => e.id.toLowerCase().includes(q) || e.desc.toLowerCase().includes(q))
+    : scalaArchive;
+
+  scalaStatus.textContent = q
+    ? `${matches.length.toLocaleString()} match${matches.length === 1 ? "" : "es"} for "${query.trim()}"`
+    : `${scalaArchive.length.toLocaleString()} scales — type to search, or pick from below`;
+
+  const shown = matches.slice(0, SCALA_RESULT_CAP);
+  scalaResultsEl.innerHTML = "";
+  shown.forEach((entry) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "scala-result";
+    row.setAttribute("role", "option");
+
+    const idEl = document.createElement("span");
+    idEl.className = "result-id";
+    idEl.textContent = `${entry.id}  (${entry.n} notes)`;
+
+    const descEl = document.createElement("span");
+    descEl.className = "result-desc";
+    descEl.textContent = entry.desc || "(no description)";
+
+    row.append(idEl, descEl);
+    row.addEventListener("click", () => selectScalaEntry(entry));
+    scalaResultsEl.appendChild(row);
+  });
+
+  if (matches.length > SCALA_RESULT_CAP) {
+    const more = document.createElement("p");
+    more.className = "tuning-hint";
+    more.textContent = `Showing first ${SCALA_RESULT_CAP} of ${matches.length.toLocaleString()} — refine your search for more.`;
+    scalaResultsEl.appendChild(more);
+  }
+}
+
+function selectScalaEntry(entry) {
+  state.scalaEntry = entry;
+  lastEffectiveTuning = null; // force the interval-display default to re-derive for this entry
+  updateActiveScalaLabel();
+  scalaDialog.close();
+  optionsDialog.close();
+  render();
+}
+
+function updateActiveScalaLabel() {
+  if (state.scalaEntry) {
+    activeScalaLabel.hidden = false;
+    activeScalaLabel.textContent = `Playing "${state.scalaEntry.desc}" (${state.scalaEntry.id}.scl) from the Scala archive.`;
+  } else {
+    activeScalaLabel.hidden = true;
+  }
+}
+
+browseScalaBtn.addEventListener("click", () => {
+  scalaDialog.showModal();
+  if (!scalaArchive) {
+    scalaStatus.textContent = "Loading archive…";
+    scalaResultsEl.innerHTML = "";
+    loadScalaArchive()
+      .then(() => renderScalaResults(scalaSearchInput.value))
+      .catch(() => {
+        scalaStatus.textContent = "Couldn't load the archive — check your connection and try again.";
+      });
+  } else {
+    renderScalaResults(scalaSearchInput.value);
+  }
+});
+
+closeScalaDialogBtn.addEventListener("click", () => scalaDialog.close());
+scalaDialog.addEventListener("click", (e) => {
+  if (e.target === scalaDialog) scalaDialog.close();
+});
+scalaSearchInput.addEventListener("input", () => renderScalaResults(scalaSearchInput.value));
+
 function render() {
   renderNotes();
 }
@@ -679,6 +885,9 @@ rootSelect.addEventListener("change", () => {
 
 scaleSelect.addEventListener("change", () => {
   state.scaleName = scaleSelect.value;
+  state.scalaEntry = null;
+  lastEffectiveTuning = null;
+  updateActiveScalaLabel();
   render();
 });
 
