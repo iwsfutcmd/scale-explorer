@@ -54,15 +54,15 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
-  padding: calc(0.5rem + env(safe-area-inset-top)) calc(0.6rem + env(safe-area-inset-right)) 0.5rem calc(0.6rem + env(safe-area-inset-left));
+  gap: 0.4rem;
+  padding: calc(0.2rem + env(safe-area-inset-top)) calc(0.4rem + env(safe-area-inset-right)) 0.2rem calc(0.4rem + env(safe-area-inset-left));
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
 }
 
 .app-title {
   margin: 0;
-  font-size: clamp(0.9rem, 3vw, 1.1rem);
+  font-size: clamp(0.75rem, 2.4vw, 0.9rem);
   font-weight: 600;
   text-align: center;
   flex: 1 1 auto;
@@ -73,13 +73,13 @@ body {
 
 .icon-btn {
   flex: 0 0 auto;
-  width: 2.75rem;
-  height: 2.75rem;
+  width: 1.9rem;
+  height: 1.9rem;
   border-radius: 50%;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
-  font-size: 1.15rem;
+  font-size: 0.9rem;
   line-height: 1;
   display: flex;
   align-items: center;
@@ -93,15 +93,52 @@ body {
   cursor: default;
 }
 
+/* --- Keyboard scrollbar ----------------------------------------------
+   A dedicated drag target for scrolling, separate from the keys themselves,
+   so a drag across the keyboard can be used for playing a slur instead. */
+
+.keyboard-scrollbar {
+  position: relative;
+  flex: 0 0 auto;
+  height: 48px;
+  margin: 0.4rem calc(0.5rem + env(safe-area-inset-right)) 0 calc(0.5rem + env(safe-area-inset-left));
+  touch-action: none;
+  cursor: pointer;
+}
+
+.keyboard-scrollbar::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 10px;
+  transform: translateY(-50%);
+  border-radius: 5px;
+  background: var(--border);
+}
+
+.scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  min-width: 32px;
+  border-radius: 18px;
+  background: var(--accent);
+  opacity: 0.85;
+}
+
 /* --- Note row -------------------------------------------------------
    Single row (mobile is assumed landscape) that never wraps. Buttons are
    sized as a fixed fraction of the row's width via --visible-count (set in
    JS to visibleOctaves * notesPerOctave), not shrink-to-fit — so the full
-   TOTAL_OCTAVE_RANGE of buttons overflows horizontally and the row scrolls
-   to reach octaves beyond the visible window. `touch-action: pan-x` lets the
-   browser handle that horizontal drag as a native scroll (which cancels any
-   held note via the pointercancel/lostpointercapture handlers below) while
-   still delivering pointerdown/up immediately for a stationary tap-and-hold.
+   TOTAL_OCTAVE_RANGE of buttons overflows horizontally and the keyboard
+   scrolls to reach octaves beyond the visible window. Scrolling only happens
+   via the dedicated bar above (or a desktop trackpad/wheel) — the keys
+   themselves use `touch-action: none` and are read via JS (`.scrollLeft`),
+   because a drag directly on the keys is reserved for playing a slur across
+   notes instead of scrolling.
    `min-height: 0` on the row overrides flexbox's default "don't shrink below
    content size" behavior, which Firefox enforces more strictly than Chrome.
    Each button is its own size container so its inner text can progressively
@@ -119,8 +156,11 @@ body {
   padding: 0.5rem calc(0.5rem + env(safe-area-inset-right)) calc(0.5rem + env(safe-area-inset-bottom)) calc(0.5rem + env(safe-area-inset-left));
   overflow-x: auto;
   overflow-y: hidden;
-  scroll-snap-type: x proximity;
-  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.notes::-webkit-scrollbar {
+  display: none;
 }
 
 .note-btn {
@@ -128,7 +168,6 @@ body {
   flex: 0 0 calc(100% / var(--visible-count, 21));
   min-width: 0;
   overflow: hidden;
-  scroll-snap-align: start;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg-panel);
@@ -141,7 +180,7 @@ body {
   padding: 0.25rem 0.1rem;
   cursor: pointer;
   user-select: none;
-  touch-action: pan-x;
+  touch-action: none;
   transition: transform 0.05s ease, background 0.08s ease;
 }
 

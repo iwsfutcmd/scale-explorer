@@ -15,6 +15,10 @@
       <button id="play-scale" class="icon-btn" type="button" aria-label="Play scale">▶</button>
     </header>
 
+    <div id="keyboard-scrollbar" class="keyboard-scrollbar" role="scrollbar" aria-controls="notes" aria-orientation="horizontal">
+      <div id="scrollbar-thumb" class="scrollbar-thumb"></div>
+    </div>
+
     <main id="notes" class="notes" role="group" aria-label="Scale notes"></main>
   </div>
 
@@ -38,7 +42,7 @@
       <div class="field">
         <label for="octave-select">Octaves visible</label>
         <select id="octave-select"></select>
-        <p class="tuning-hint">The keyboard has more range than this — scroll it to reach lower or higher octaves.</p>
+        <p class="tuning-hint">The keyboard has more range than this — drag the bar above it to reach lower or higher octaves.</p>
       </div>
 
       <div class="field">
@@ -47,6 +51,12 @@
         <p id="tuning-hint" class="tuning-hint" hidden>
           Locked to Pythagorean (3-limit) — the exact ratios Chinese pentatonic modes use.
         </p>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Intervals shown as</span>
+        <div id="interval-display-group" class="segmented" role="radiogroup" aria-label="Interval display"></div>
+        <p class="tuning-hint">Defaults to cents for equal temperament, ratios otherwise — override any time.</p>
       </div>
 
       <div class="field">

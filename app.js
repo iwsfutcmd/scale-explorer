@@ -129,20 +129,40 @@ function degreeFrequency(rootFreq, tuningKey, degree) {
   return rootFreq * TUNINGS[tuningKey].ratios[semitone] * 2 ** octave;
 }
 
-// Exact ratio label relative to the root: a reduced fraction for just/Pythagorean
-// tuning, or a decimal multiplier for equal temperament (which is irrational).
-function ratioLabel(tuningKey, degree) {
+// The reduced fraction for a degree under just/Pythagorean tuning (both are
+// exact ratios by construction). Null for equal temperament, which is
+// irrational and has no clean fraction.
+function exactFraction(tuningKey, degree) {
   const tuning = TUNINGS[tuningKey];
+  if (!tuning.fractions) return null;
   const semitone = ((degree % 12) + 12) % 12;
   const octave = Math.floor(degree / 12);
-  if (tuning.fractions) {
-    let [num, den] = tuning.fractions[semitone];
-    if (octave > 0) num *= 2 ** octave;
-    else if (octave < 0) den *= 2 ** -octave;
-    const g = gcd(num, den);
-    return `${num / g}/${den / g}`;
+  let [num, den] = tuning.fractions[semitone];
+  if (octave > 0) num *= 2 ** octave;
+  else if (octave < 0) den *= 2 ** -octave;
+  const g = gcd(num, den);
+  return [num / g, den / g];
+}
+
+function defaultIntervalDisplay(tuningKey) {
+  return tuningKey === "equal" ? "cents" : "ratio";
+}
+
+// Interval label relative to the root, in whichever of the two representations
+// is requested. Cents are exact for equal temperament (a tempered semitone is
+// precisely 100 cents by definition) and rounded for just/Pythagorean. Ratio
+// mode falls back to a decimal multiplier for equal temperament, since it has
+// no exact fraction to show.
+function intervalLabel(tuningKey, degree, mode) {
+  const fraction = exactFraction(tuningKey, degree);
+  if (mode === "cents") {
+    if (fraction) return `${Math.round(1200 * Math.log2(fraction[0] / fraction[1]))}¢`;
+    return `${degree * 100}¢`;
   }
-  return `×${(tuning.ratios[semitone] * 2 ** octave).toFixed(3)}`;
+  if (fraction) return `${fraction[0]}/${fraction[1]}`;
+  const semitone = ((degree % 12) + 12) % 12;
+  const octave = Math.floor(degree / 12);
+  return `×${(TUNINGS[tuningKey].ratios[semitone] * 2 ** octave).toFixed(3)}`;
 }
 
 // --- Audio engine --------------------------------------------------------
@@ -231,11 +251,14 @@ const scaleSelect = document.getElementById("scale-select");
 const octaveSelect = document.getElementById("octave-select");
 const tuningGroup = document.getElementById("tuning-group");
 const tuningHint = document.getElementById("tuning-hint");
+const intervalDisplayGroup = document.getElementById("interval-display-group");
 const volumeSlider = document.getElementById("volume-slider");
 const notesEl = document.getElementById("notes");
 const playScaleBtn = document.getElementById("play-scale");
 const openOptionsBtn = document.getElementById("open-options");
 const optionsDialog = document.getElementById("options-dialog");
+const keyboardScrollbar = document.getElementById("keyboard-scrollbar");
+const scrollbarThumb = document.getElementById("scrollbar-thumb");
 
 const OCTAVE_CHOICES = [1, 2, 3, 4, 5];
 
@@ -248,11 +271,64 @@ let state = {
   root: 0, // index into NOTE_NAMES
   tuning: "equal",
   scaleName: "Major (Ionian)",
-  visibleOctaves: 3,
+  visibleOctaves: 2,
+  intervalDisplay: defaultIntervalDisplay("equal"),
 };
 
+// Tracks the last tuning renderNotes() actually rendered with, so it can tell
+// when the effective tuning changes (directly, or via a Chinese scale's lock)
+// and reset the interval display to that tuning's natural default.
+let lastEffectiveTuning = null;
+
 let currentFrequencies = [];
-const activeVoices = new Map(); // pointerId -> voice
+const activeVoices = new Map(); // pointerId -> { voice, btn }
+
+const INTERVAL_DISPLAY_OPTIONS = [
+  { key: "ratio", label: "Ratios" },
+  { key: "cents", label: "Cents" },
+];
+
+function populateIntervalDisplayGroup() {
+  INTERVAL_DISPLAY_OPTIONS.forEach(({ key, label }) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.dataset.key = key;
+    btn.role = "radio";
+    btn.addEventListener("click", () => {
+      state.intervalDisplay = key;
+      updateIntervalDisplayUI();
+      refreshIntervalLabels();
+    });
+    intervalDisplayGroup.appendChild(btn);
+  });
+  updateIntervalDisplayUI();
+}
+
+function updateIntervalDisplayUI() {
+  [...intervalDisplayGroup.children].forEach((b) => {
+    b.setAttribute("aria-checked", b.dataset.key === state.intervalDisplay ? "true" : "false");
+  });
+}
+
+// Updates just the ratio/cents text on already-rendered buttons, without
+// rebuilding the row or resetting scroll position — used when only the
+// interval display mode changes, since that shouldn't jump the keyboard.
+function refreshIntervalLabels() {
+  const { fixedTuning, groupName } = findScaleEntry(state.scaleName);
+  const effectiveTuning = fixedTuning || state.tuning;
+  const showChinese = groupName === "Chinese Pentatonic Modes";
+  [...notesEl.children].forEach((btn) => {
+    const degree = Number(btn.dataset.degree);
+    const label = intervalLabel(effectiveTuning, degree, state.intervalDisplay);
+    const ratioEl = btn.querySelector(".ratio");
+    if (ratioEl) ratioEl.textContent = label;
+    const nameText = btn.querySelector(".name")?.textContent ?? "";
+    const hanziText = showChinese ? " " + (btn.querySelector(".hanzi")?.textContent ?? "") : "";
+    const freqText = btn.querySelector(".freq")?.textContent ?? "";
+    btn.setAttribute("aria-label", `${nameText}${hanziText}, ${label}, ${freqText}`);
+  });
+}
 
 function populateOctaveSelect() {
   OCTAVE_CHOICES.forEach((n) => {
@@ -331,6 +407,12 @@ function renderNotes() {
   const showChinese = groupName === "Chinese Pentatonic Modes";
   const root = rootFrequency(state.root);
 
+  if (effectiveTuning !== lastEffectiveTuning) {
+    state.intervalDisplay = defaultIntervalDisplay(effectiveTuning);
+    lastEffectiveTuning = effectiveTuning;
+    updateIntervalDisplayUI();
+  }
+
   // The full scrollable keyboard: a wide, fixed range of octaves.
   const degreeSeq = buildDegreeSequence(degrees, TOTAL_OCTAVE_RANGE);
   const allFrequencies = degreeSeq.map((d) => degreeFrequency(root, effectiveTuning, d));
@@ -353,6 +435,8 @@ function renderNotes() {
     const btn = document.createElement("button");
     btn.className = "note-btn";
     btn.type = "button";
+    btn.dataset.freq = String(freq);
+    btn.dataset.degree = String(degree);
     if (semitone === 0) btn.classList.add("root");
 
     const octEl = document.createElement("span");
@@ -361,7 +445,7 @@ function renderNotes() {
 
     const nameEl = document.createElement("span");
     nameEl.className = "name";
-    nameEl.textContent = noteName(state.root, degree);
+    nameEl.textContent = noteName(state.root, semitone);
 
     const hanziEl = document.createElement("span");
     hanziEl.className = "hanzi";
@@ -369,7 +453,7 @@ function renderNotes() {
 
     const ratioEl = document.createElement("span");
     ratioEl.className = "ratio";
-    ratioEl.textContent = ratioLabel(effectiveTuning, degree);
+    ratioEl.textContent = intervalLabel(effectiveTuning, degree, state.intervalDisplay);
 
     const freqEl = document.createElement("span");
     freqEl.className = "freq";
@@ -381,14 +465,14 @@ function renderNotes() {
 
     btn.setAttribute(
       "aria-label",
-      `${noteName(state.root, degree)}${showChinese ? " " + hanziEl.textContent : ""}, ${ratioEl.textContent}, ${freqEl.textContent}`
+      `${noteName(state.root, semitone)}${showChinese ? " " + hanziEl.textContent : ""}, ${ratioEl.textContent}, ${freqEl.textContent}`
     );
 
-    attachNoteHandlers(btn, () => freq);
     notesEl.appendChild(btn);
   });
 
   scrollToVisibleWindow(notesPerOctave);
+  updateScrollThumb();
 }
 
 // Scroll so the octaves centered on the root are in view by default, leaving
@@ -402,32 +486,111 @@ function scrollToVisibleWindow(notesPerOctave) {
   if (target) notesEl.scrollLeft = target.offsetLeft;
 }
 
-function attachNoteHandlers(btn, getFreq) {
-  const onDown = (e) => {
-    e.preventDefault();
-    btn.setPointerCapture?.(e.pointerId);
-    const voice = startNote(getFreq());
-    activeVoices.set(e.pointerId, voice);
-    btn.classList.add("active");
-  };
-  const onUp = (e) => {
-    e.preventDefault();
-    const voice = activeVoices.get(e.pointerId);
-    if (voice) {
-      stopNote(voice);
-      activeVoices.delete(e.pointerId);
-    }
-    btn.classList.remove("active");
-  };
-  btn.addEventListener("pointerdown", onDown);
-  btn.addEventListener("pointerup", onUp);
-  btn.addEventListener("pointercancel", onUp);
-  // Pointer capture (set on pointerdown) is the source of truth for release —
-  // it keeps the note sustained even if a finger drifts off the button during
-  // a hold, which `pointerleave` alone would otherwise cut off early on touch.
-  btn.addEventListener("lostpointercapture", onUp);
-  btn.addEventListener("contextmenu", (e) => e.preventDefault());
+// --- Note interaction (tap-and-hold, drag-across-keys slur) --------------
+//
+// Handlers are delegated on the container (set up once) rather than attached
+// per button, since buttons are recreated on every render anyway and dragging
+// across them needs container-level tracking. Pointer capture is set on the
+// container so a drag stays tracked even if it leaves the row's bounds; the
+// element actually under the pointer is found via elementFromPoint on every
+// move (e.target is *not* useful for this — capture redirects it to the
+// original element), and switching to a new button swaps the sounding note,
+// which is what makes dragging across keys play a slur.
+
+function noteButtonAt(clientX, clientY) {
+  const el = document.elementFromPoint(clientX, clientY);
+  const btn = el?.closest(".note-btn");
+  return btn && notesEl.contains(btn) ? btn : null;
 }
+
+function beginNoteOnPointer(pointerId, btn) {
+  const freq = Number(btn.dataset.freq);
+  const voice = startNote(freq);
+  activeVoices.set(pointerId, { voice, btn });
+  btn.classList.add("active");
+}
+
+function endNoteOnPointer(pointerId) {
+  const active = activeVoices.get(pointerId);
+  if (!active) return;
+  stopNote(active.voice);
+  active.btn.classList.remove("active");
+  activeVoices.delete(pointerId);
+}
+
+notesEl.addEventListener("pointerdown", (e) => {
+  const btn = e.target.closest(".note-btn");
+  if (!btn) return;
+  e.preventDefault();
+  notesEl.setPointerCapture?.(e.pointerId);
+  beginNoteOnPointer(e.pointerId, btn);
+});
+
+notesEl.addEventListener("pointermove", (e) => {
+  const active = activeVoices.get(e.pointerId);
+  if (!active) return;
+  const btn = noteButtonAt(e.clientX, e.clientY);
+  if (btn && btn !== active.btn) {
+    endNoteOnPointer(e.pointerId);
+    beginNoteOnPointer(e.pointerId, btn);
+  }
+});
+
+// Pointer capture is the sole authority for ending a note — it keeps the note
+// sustained even if a finger drifts slightly off a button during a hold,
+// which `pointerleave` alone would otherwise cut off early on touch.
+notesEl.addEventListener("pointerup", (e) => endNoteOnPointer(e.pointerId));
+notesEl.addEventListener("pointercancel", (e) => endNoteOnPointer(e.pointerId));
+notesEl.addEventListener("lostpointercapture", (e) => endNoteOnPointer(e.pointerId));
+notesEl.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// --- Keyboard scrollbar ---------------------------------------------------
+//
+// Scrolling the keyboard only happens through this dedicated bar (or a
+// desktop trackpad/wheel) — a drag directly on the keys is reserved for
+// playing a slur instead, so `.note-btn` has touch-action: none.
+
+function updateScrollThumb() {
+  const trackWidth = keyboardScrollbar.clientWidth;
+  const contentWidth = notesEl.scrollWidth;
+  const viewWidth = notesEl.clientWidth;
+  const thumbWidth = Math.max(24, Math.min(trackWidth, (viewWidth / contentWidth) * trackWidth));
+  const maxScroll = Math.max(1, contentWidth - viewWidth);
+  const scrollRatio = Math.min(1, notesEl.scrollLeft / maxScroll);
+  const maxThumbLeft = trackWidth - thumbWidth;
+  scrollbarThumb.style.width = `${thumbWidth}px`;
+  scrollbarThumb.style.transform = `translateX(${scrollRatio * maxThumbLeft}px)`;
+}
+
+function scrollToTrackClientX(clientX) {
+  const trackRect = keyboardScrollbar.getBoundingClientRect();
+  const thumbWidth = scrollbarThumb.offsetWidth;
+  const maxThumbLeft = trackRect.width - thumbWidth;
+  const targetThumbLeft = Math.min(maxThumbLeft, Math.max(0, clientX - trackRect.left - thumbWidth / 2));
+  const scrollRatio = maxThumbLeft > 0 ? targetThumbLeft / maxThumbLeft : 0;
+  const maxScroll = notesEl.scrollWidth - notesEl.clientWidth;
+  notesEl.scrollLeft = scrollRatio * maxScroll;
+}
+
+let draggingScrollbar = false;
+
+keyboardScrollbar.addEventListener("pointerdown", (e) => {
+  draggingScrollbar = true;
+  keyboardScrollbar.setPointerCapture?.(e.pointerId);
+  scrollToTrackClientX(e.clientX);
+});
+keyboardScrollbar.addEventListener("pointermove", (e) => {
+  if (draggingScrollbar) scrollToTrackClientX(e.clientX);
+});
+const endScrollbarDrag = () => {
+  draggingScrollbar = false;
+};
+keyboardScrollbar.addEventListener("pointerup", endScrollbarDrag);
+keyboardScrollbar.addEventListener("pointercancel", endScrollbarDrag);
+keyboardScrollbar.addEventListener("lostpointercapture", endScrollbarDrag);
+
+notesEl.addEventListener("scroll", updateScrollThumb, { passive: true });
+window.addEventListener("resize", updateScrollThumb);
 
 function render() {
   renderNotes();
@@ -470,5 +633,6 @@ populateRootSelect();
 populateScaleSelect();
 populateOctaveSelect();
 populateTuningGroup();
+populateIntervalDisplayGroup();
 volumeSlider.value = String(masterVolume);
 render();
