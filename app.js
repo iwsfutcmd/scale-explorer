@@ -391,6 +391,56 @@ function fmTimbre({ ratio, indexStart, indexEnd, decayTime }) {
   };
 }
 
+// One shared, permanently-looping noise buffer feeds every pluck voice — a
+// BufferSourceNode can't be restarted once played, so retriggering a plucked
+// note comes from briefly gating this constant noise into a resonant filter
+// (a lightweight approximation of Karplus-Strong string synthesis) rather
+// than from starting a new noise burst each time.
+let sharedNoiseSource = null;
+function getSharedNoiseSource(ctx) {
+  if (!sharedNoiseSource) {
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    sharedNoiseSource = ctx.createBufferSource();
+    sharedNoiseSource.buffer = buffer;
+    sharedNoiseSource.loop = true;
+    sharedNoiseSource.start();
+  }
+  return sharedNoiseSource;
+}
+
+function pluckTimbre() {
+  return (ctx) => {
+    const noise = getSharedNoiseSource(ctx);
+    const gate = ctx.createGain();
+    gate.gain.value = 0;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.Q.value = 16;
+    noise.connect(gate).connect(filter);
+    return {
+      output: filter,
+      setFrequency(freq, time) {
+        // A short burst of noise excites the resonant filter, which then
+        // rings at (roughly) the note's frequency and decays on its own —
+        // the pluck's decay comes from the filter's resonance, not from the
+        // voice's overall gain envelope, so it rings out even while held,
+        // same as a real plucked string would.
+        filter.frequency.setValueAtTime(freq, time);
+        gate.gain.cancelScheduledValues(time);
+        gate.gain.setValueAtTime(1, time);
+        gate.gain.setTargetAtTime(0, time + 0.005, 0.025);
+      },
+      dispose() {
+        noise.disconnect(gate);
+        gate.disconnect();
+        filter.disconnect();
+      },
+    };
+  };
+}
+
 const TIMBRES = {
   sine: { label: "Sine", build: simpleOscTimbre("sine") },
   triangle: { label: "Triangle", build: simpleOscTimbre("triangle") },
@@ -417,6 +467,35 @@ const TIMBRES = {
     // A non-integer ratio detunes the partials from the harmonic series,
     // which is what makes FM bells sound bell-like instead of instrument-like.
     build: fmTimbre({ ratio: 3.01, indexStart: 7, indexEnd: 1, decayTime: 1.1 }),
+  },
+  hollow: {
+    label: "Hollow",
+    // Odd harmonics only (2nd, 4th, ... all silent) — the clarinet's
+    // signature, hollow/woody rather than bright.
+    build: additiveTimbre([1, 0, 0.6, 0, 0.35, 0, 0.2, 0, 0.1]),
+  },
+  reed: {
+    label: "Reed",
+    // Amplitude peaks in the middle harmonics instead of monotonically
+    // falling off from the fundamental — a crude formant, which reads as
+    // "nasal"/reedy (oboe-like) rather than just bright.
+    build: additiveTimbre([0.6, 0.4, 1, 0.7, 0.8, 0.4, 0.25, 0.15]),
+  },
+  marimba: {
+    label: "Marimba",
+    // Low modulation index and a fast decay — mostly a plain tone with a
+    // brief woody "thock" at the attack, mallet-like.
+    build: fmTimbre({ ratio: 1, indexStart: 1.5, indexEnd: 0.05, decayTime: 0.08 }),
+  },
+  gong: {
+    label: "Gong",
+    // A different (lower) inharmonic ratio than Bell, with a much slower
+    // decay — deeper and murkier rather than shimmery.
+    build: fmTimbre({ ratio: 1.4, indexStart: 5, indexEnd: 1.5, decayTime: 2 }),
+  },
+  pluck: {
+    label: "Pluck",
+    build: pluckTimbre(),
   },
 };
 
