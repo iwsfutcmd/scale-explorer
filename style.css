@@ -7,6 +7,7 @@
   --accent: #5eb0ff;
   --accent-text: #0a0e14;
   --root-accent: #ffb454;
+  --record: #ff5c5c;
 }
 
 @media (prefers-color-scheme: light) {
@@ -19,6 +20,7 @@
     --accent: #2b7fd1;
     --accent-text: #ffffff;
     --root-accent: #c97a00;
+    --record: #d62f2f;
   }
 }
 
@@ -91,6 +93,31 @@ body {
 .icon-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* --- Recorder --------------------------------------------------------- */
+
+.recorder {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.15rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.record-btn {
+  color: var(--record);
+}
+
+.record-btn[data-status="recording"] {
+  background: var(--record);
+  border-color: var(--record);
+  color: var(--bg);
+}
+
+.record-btn[data-status="paused"] {
+  border-color: var(--record);
 }
 
 /* --- Keyboard scrollbar ----------------------------------------------

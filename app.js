@@ -607,6 +607,9 @@ const volumeSlider = document.getElementById("volume-slider");
 const notesEl = document.getElementById("notes");
 const playScaleBtn = document.getElementById("play-scale");
 const openOptionsBtn = document.getElementById("open-options");
+const recordBtn = document.getElementById("record-btn");
+const stopRecordingBtn = document.getElementById("stop-recording-btn");
+const playRecordingBtn = document.getElementById("play-recording-btn");
 const optionsDialog = document.getElementById("options-dialog");
 const keyboardScrollbar = document.getElementById("keyboard-scrollbar");
 const scrollbarThumb = document.getElementById("scrollbar-thumb");
@@ -866,6 +869,10 @@ function renderNotes() {
   const notesPerOctave = degrees.length;
   notesEl.style.setProperty("--visible-count", state.visibleOctaves * notesPerOctave);
 
+  // Each button's scale position relative to the root (see
+  // degreeForPosition) — what a recording stores instead of a frequency.
+  const rootButtonIndex = octaveOffsets(TOTAL_OCTAVE_RANGE, steps).indexOf(0) * notesPerOctave;
+
   notesEl.innerHTML = "";
   degreeSeq.forEach((degree, i) => {
     const freq = allFrequencies[i];
@@ -875,6 +882,7 @@ function renderNotes() {
     btn.type = "button";
     btn.dataset.freq = String(freq);
     btn.dataset.degree = String(degree);
+    btn.dataset.pos = String(i - rootButtonIndex);
     if (step === 0) btn.classList.add("root");
 
     const octEl = document.createElement("span");
@@ -945,7 +953,9 @@ function noteButtonAt(clientX, clientY) {
 function beginNoteOnPointer(pointerId, btn) {
   const freq = Number(btn.dataset.freq);
   const voice = startNote(freq);
-  activeVoices.set(pointerId, { voice, btn });
+  const pos = Number(btn.dataset.pos);
+  const noteId = recordNoteOn(pos);
+  activeVoices.set(pointerId, { voice, btn, pos, noteId });
   btn.classList.add("active");
 }
 
@@ -953,6 +963,7 @@ function endNoteOnPointer(pointerId) {
   const active = activeVoices.get(pointerId);
   if (!active) return;
   stopNote(active.voice);
+  recordNoteOff(active.noteId);
   active.btn.classList.remove("active");
   activeVoices.delete(pointerId);
 }
@@ -1064,6 +1075,182 @@ keyboardScrollbar.addEventListener(
 notesEl.addEventListener("scroll", updateScrollThumb, { passive: true });
 window.addEventListener("resize", updateScrollThumb);
 
+// --- Recorder ---------------------------------------------------------
+//
+// A recording stores *scale positions*, not frequencies: position 0 is the
+// root, 1 the next scale note up, n (for an n-note scale) the root an octave
+// up, -1 the scale note just below the root, and so on. Each note's
+// frequency is only worked out when it's played back, from whatever scale,
+// root and tuning are active at that moment — so selecting a different scale
+// (even mid-playback) replays the same melody in that scale, as long as it
+// has the same number of notes per octave. If it doesn't, there's no
+// meaningful position-for-position mapping yet, so those notes are skipped.
+//
+// Ephemeral by design: the recording lives only in memory.
+
+let recorder = {
+  status: "idle", // "idle" | "recording" | "paused"
+  events: [], // { t, type: "on" | "off", id, pos } — t in ms of recording time
+  notesPerOctave: 0,
+  elapsedBeforePause: 0,
+  segmentStart: 0,
+};
+let recording = null; // the last finished recording: { events, notesPerOctave, duration }
+let nextNoteId = 1;
+
+// Playback bookkeeping, so it can be stopped part-way through.
+let playback = null; // { timers: [], voices: Map<id, { voice, btn }> }
+
+function recordingTime() {
+  return recorder.elapsedBeforePause + (performance.now() - recorder.segmentStart);
+}
+
+// Returns an id tying this note-on to its note-off, or null when not recording.
+// Notes are given ids even while paused so that one held across a resume can
+// be re-opened in the recording (see resumeRecording).
+function recordNoteOn(pos) {
+  if (recorder.status === "idle") return null;
+  const id = nextNoteId++;
+  if (recorder.status === "recording") recorder.events.push({ t: recordingTime(), type: "on", id, pos });
+  return id;
+}
+
+function recordNoteOff(id) {
+  if (id == null || recorder.status !== "recording") return;
+  if (!recorder.events.some((e) => e.type === "on" && e.id === id)) return;
+  if (recorder.events.some((e) => e.type === "off" && e.id === id)) return;
+  recorder.events.push({ t: recordingTime(), type: "off", id });
+}
+
+// Notes being held when recording pauses/stops are closed off at that
+// moment, and re-opened on resume, so the recording never has a note-on
+// without a matching note-off.
+function closeHeldNotes() {
+  activeVoices.forEach(({ noteId }) => recordNoteOff(noteId));
+}
+
+function startRecording() {
+  stopPlayback();
+  recorder = {
+    status: "recording",
+    events: [],
+    notesPerOctave: getActiveScale().degrees.length,
+    elapsedBeforePause: 0,
+    segmentStart: performance.now(),
+  };
+  activeVoices.forEach((active) => {
+    active.noteId = recordNoteOn(active.pos);
+  });
+  updateRecorderUI();
+}
+
+function pauseRecording() {
+  closeHeldNotes();
+  recorder.elapsedBeforePause = recordingTime();
+  recorder.status = "paused";
+  updateRecorderUI();
+}
+
+function resumeRecording() {
+  recorder.segmentStart = performance.now();
+  recorder.status = "recording";
+  activeVoices.forEach((active) => {
+    active.noteId = recordNoteOn(active.pos);
+  });
+  updateRecorderUI();
+}
+
+function stopRecording() {
+  if (recorder.status === "recording") {
+    closeHeldNotes();
+    recorder.elapsedBeforePause = recordingTime();
+  }
+  const { events, notesPerOctave, elapsedBeforePause } = recorder;
+  if (events.length > 0) recording = { events, notesPerOctave, duration: elapsedBeforePause };
+  recorder = { status: "idle", events: [], notesPerOctave: 0, elapsedBeforePause: 0, segmentStart: 0 };
+  updateRecorderUI();
+}
+
+// Scale position -> scale degree in the given scale. Works for any position,
+// not just ones currently on screen.
+function degreeForPosition(pos, degrees, steps) {
+  const n = degrees.length;
+  const octave = Math.floor(pos / n);
+  return degrees[pos - octave * n] + octave * steps;
+}
+
+function playbackNoteOn(id, pos) {
+  const { degrees, fixedTuning } = getActiveScale();
+  if (degrees.length !== recording.notesPerOctave) return;
+  const effectiveTuning = fixedTuning || state.tuning;
+  const steps = TUNINGS[effectiveTuning].steps;
+  const freq = degreeFrequency(rootFrequency(state.root), effectiveTuning, degreeForPosition(pos, degrees, steps));
+  const voice = startNote(freq);
+  const btn = notesEl.querySelector(`.note-btn[data-pos="${pos}"]`);
+  btn?.classList.add("active");
+  playback.voices.set(id, { voice, btn });
+}
+
+function playbackNoteOff(id) {
+  const played = playback.voices.get(id);
+  if (!played) return;
+  stopNote(played.voice);
+  played.btn?.classList.remove("active");
+  playback.voices.delete(id);
+}
+
+function startPlayback() {
+  if (!recording) return;
+  stopPlayback();
+  getAudioContext();
+  playback = { timers: [], voices: new Map() };
+  recording.events.forEach((e) => {
+    const fire = e.type === "on" ? () => playbackNoteOn(e.id, e.pos) : () => playbackNoteOff(e.id);
+    playback.timers.push(setTimeout(fire, e.t));
+  });
+  playback.timers.push(setTimeout(stopPlayback, recording.duration + 50));
+  updateRecorderUI();
+}
+
+function stopPlayback() {
+  if (!playback) return;
+  playback.timers.forEach(clearTimeout);
+  [...playback.voices.keys()].forEach(playbackNoteOff);
+  playback = null;
+  updateRecorderUI();
+}
+
+function setIconButton(btn, glyph, label) {
+  btn.textContent = glyph;
+  btn.setAttribute("aria-label", label);
+  btn.title = label;
+}
+
+function updateRecorderUI() {
+  const { status } = recorder;
+  if (status === "recording") setIconButton(recordBtn, "\u23F8\uFE0E", "Pause recording");
+  else if (status === "paused") setIconButton(recordBtn, "\u23FA\uFE0E", "Resume recording");
+  else setIconButton(recordBtn, "\u23FA\uFE0E", "Record");
+  recordBtn.dataset.status = status;
+  stopRecordingBtn.disabled = status === "idle";
+
+  if (playback) setIconButton(playRecordingBtn, "\u23F9\uFE0E", "Stop playback");
+  else setIconButton(playRecordingBtn, "\u25B6\uFE0E", "Play recording");
+  playRecordingBtn.disabled = !recording || status !== "idle";
+  const mismatch = recording && getActiveScale().degrees.length !== recording.notesPerOctave;
+  if (mismatch && !playback) {
+    playRecordingBtn.title = `Play recording (recorded in a ${recording.notesPerOctave}-note scale — won't sound in this one)`;
+  }
+}
+
+recordBtn.addEventListener("click", () => {
+  if (recorder.status === "idle") startRecording();
+  else if (recorder.status === "recording") pauseRecording();
+  else resumeRecording();
+});
+stopRecordingBtn.addEventListener("click", stopRecording);
+playRecordingBtn.addEventListener("click", () => (playback ? stopPlayback() : startPlayback()));
+
 // --- Scala archive browser -------------------------------------------
 //
 // scala-archive.json holds all 5,401 scales from the Huygens-Fokker
@@ -1172,6 +1359,7 @@ scalaSearchInput.addEventListener("input", () => renderScalaResults(scalaSearchI
 
 function render() {
   renderNotes();
+  updateRecorderUI();
 }
 
 rootSelect.addEventListener("change", () => {
