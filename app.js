@@ -710,14 +710,25 @@ function refreshIntervalLabels() {
   });
 }
 
-// Just resizes the buttons (via --visible-count) and the scroll thumb, both
-// cheap, without rebuilding the row or touching scroll position — this is
-// what runs on every tick of the octave slider, so it needs to stay smooth
-// during a drag rather than doing a full render() per tick.
-function updateVisibleCount() {
+// The single entry point for changing the zoom level, shared by the Options
+// slider and pinch-to-zoom on the scrollbar. Clamped to the slider's own
+// min/max so the two can never disagree, and keeps whatever note was in the
+// middle of the view in the middle as the keys resize. Only resizes the
+// buttons (via --visible-count) and the scroll thumb, without rebuilding the
+// row, since this runs on every slider tick / pinch move and must stay smooth.
+function setVisibleOctaves(value) {
+  const min = Number(octaveSlider.min);
+  const max = Number(octaveSlider.max);
+  const clamped = Math.min(max, Math.max(min, value));
+  const centerRatio = (notesEl.scrollLeft + notesEl.clientWidth / 2) / notesEl.scrollWidth;
+  state.visibleOctaves = clamped;
+  octaveSlider.value = String(clamped);
+  octaveValueLabel.textContent = clamped.toFixed(1);
   const { degrees } = getActiveScale();
-  notesEl.style.setProperty("--visible-count", state.visibleOctaves * degrees.length);
+  notesEl.style.setProperty("--visible-count", clamped * degrees.length);
+  notesEl.scrollLeft = centerRatio * notesEl.scrollWidth - notesEl.clientWidth / 2;
   updateScrollThumb();
+  updateCurrentFrequencies();
 }
 
 function populateRootSelect() {
@@ -1000,22 +1011,55 @@ function scrollToTrackClientX(clientX) {
   notesEl.scrollLeft = scrollRatio * maxScroll;
 }
 
-let draggingScrollbar = false;
+// Pointers currently down on the bar. One pointer drags the thumb; two
+// pointers pinch to zoom (changing visibleOctaves), the same way a map or
+// photo zooms — spreading the fingers shows fewer, wider keys.
+const scrollbarPointers = new Map(); // pointerId -> clientX
+let pinchStart = null; // { distance, visibleOctaves } while pinching
+
+function pinchDistance() {
+  const [a, b] = [...scrollbarPointers.values()];
+  return Math.max(1, Math.abs(a - b));
+}
 
 keyboardScrollbar.addEventListener("pointerdown", (e) => {
-  draggingScrollbar = true;
   keyboardScrollbar.setPointerCapture?.(e.pointerId);
-  scrollToTrackClientX(e.clientX);
+  scrollbarPointers.set(e.pointerId, e.clientX);
+  if (scrollbarPointers.size === 2) {
+    pinchStart = { distance: pinchDistance(), visibleOctaves: state.visibleOctaves };
+  } else if (scrollbarPointers.size === 1 && !pinchStart) {
+    scrollToTrackClientX(e.clientX);
+  }
 });
 keyboardScrollbar.addEventListener("pointermove", (e) => {
-  if (draggingScrollbar) scrollToTrackClientX(e.clientX);
+  if (!scrollbarPointers.has(e.pointerId)) return;
+  scrollbarPointers.set(e.pointerId, e.clientX);
+  if (pinchStart && scrollbarPointers.size === 2) {
+    setVisibleOctaves(pinchStart.visibleOctaves * (pinchStart.distance / pinchDistance()));
+  } else if (!pinchStart && scrollbarPointers.size === 1) {
+    scrollToTrackClientX(e.clientX);
+  }
 });
-const endScrollbarDrag = () => {
-  draggingScrollbar = false;
+const endScrollbarPointer = (e) => {
+  scrollbarPointers.delete(e.pointerId);
+  // Once a pinch has started, the finger left behind when the other lifts
+  // shouldn't suddenly start dragging the thumb — wait for all to lift.
+  if (scrollbarPointers.size === 0) pinchStart = null;
 };
-keyboardScrollbar.addEventListener("pointerup", endScrollbarDrag);
-keyboardScrollbar.addEventListener("pointercancel", endScrollbarDrag);
-keyboardScrollbar.addEventListener("lostpointercapture", endScrollbarDrag);
+keyboardScrollbar.addEventListener("pointerup", endScrollbarPointer);
+keyboardScrollbar.addEventListener("pointercancel", endScrollbarPointer);
+keyboardScrollbar.addEventListener("lostpointercapture", endScrollbarPointer);
+
+// Desktop trackpad pinch arrives as a ctrl+wheel event.
+keyboardScrollbar.addEventListener(
+  "wheel",
+  (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    setVisibleOctaves(state.visibleOctaves * Math.exp(e.deltaY * 0.01));
+  },
+  { passive: false },
+);
 
 notesEl.addEventListener("scroll", updateScrollThumb, { passive: true });
 window.addEventListener("resize", updateScrollThumb);
@@ -1143,12 +1187,7 @@ scaleSelect.addEventListener("change", () => {
   render();
 });
 
-octaveSlider.addEventListener("input", () => {
-  state.visibleOctaves = Number(octaveSlider.value);
-  octaveValueLabel.textContent = state.visibleOctaves.toFixed(1);
-  updateVisibleCount();
-  updateCurrentFrequencies();
-});
+octaveSlider.addEventListener("input", () => setVisibleOctaves(Number(octaveSlider.value)));
 
 volumeSlider.addEventListener("input", () => {
   masterVolume = Number(volumeSlider.value);
